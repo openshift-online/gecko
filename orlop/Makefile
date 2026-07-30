@@ -70,6 +70,43 @@ postgres-logs:
 postgres-psql:
 	@docker exec -it $(POSTGRES_CONTAINER_NAME) psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
 
+# Bigtable emulator configuration
+BIGTABLE_EMULATOR_PORT ?= 9086
+BIGTABLE_EMULATOR_HOST ?= localhost:$(BIGTABLE_EMULATOR_PORT)
+BIGTABLE_EMULATOR_BIN ?= $(shell go env GOPATH)/bin/emulator
+BIGTABLE_EMULATOR_PID_FILE ?= /tmp/orlop-bigtable-emulator.pid
+
+$(BIGTABLE_EMULATOR_BIN):
+	@echo "Installing Bigtable emulator..."
+	@go install cloud.google.com/go/bigtable/cmd/emulator@latest
+
+.PHONY: bigtable-start
+bigtable-start: $(BIGTABLE_EMULATOR_BIN)
+	@echo "Starting Bigtable emulator..."
+	@$(BIGTABLE_EMULATOR_BIN) -port $(BIGTABLE_EMULATOR_PORT) & \
+		echo $$! > $(BIGTABLE_EMULATOR_PID_FILE); \
+		for i in $$(seq 1 15); do \
+			nc -z localhost $(BIGTABLE_EMULATOR_PORT) 2>/dev/null && break || sleep 0.5; \
+		done
+	@echo "Bigtable emulator is ready at $(BIGTABLE_EMULATOR_HOST)"
+
+.PHONY: bigtable-stop
+bigtable-stop:
+	@echo "Stopping Bigtable emulator..."
+	@if [ -f $(BIGTABLE_EMULATOR_PID_FILE) ]; then \
+		kill $$(cat $(BIGTABLE_EMULATOR_PID_FILE)) 2>/dev/null || true; \
+		rm -f $(BIGTABLE_EMULATOR_PID_FILE); \
+	fi
+	@echo "Bigtable emulator stopped"
+
+.PHONY: test-bigtable
+test-bigtable: bigtable-start
+	@echo "Running Bigtable integration tests..."
+	@BIGTABLE_EMULATOR_HOST=$(BIGTABLE_EMULATOR_HOST) go test -v -count=1 ./pkg/apiserver/storage/bigtable/... ; \
+		EXIT_CODE=$$?; \
+		$(MAKE) bigtable-stop; \
+		exit $$EXIT_CODE
+
 .PHONY: test
 test:
 	@echo "Running all tests..."
@@ -89,14 +126,16 @@ test-postgres: postgres-start
 	@echo "Done!"
 
 .PHONY: test-all
-test-all: postgres-start
-	@echo "Running all tests with PostgreSQL..."
-	@POSTGRES_TEST_URL=$(POSTGRES_TEST_URL) go test -v ./...
+test-all: postgres-start bigtable-start
+	@echo "Running all tests with PostgreSQL and Bigtable..."
+	@POSTGRES_TEST_URL=$(POSTGRES_TEST_URL) BIGTABLE_EMULATOR_HOST=$(BIGTABLE_EMULATOR_HOST) go test -v -count=1 ./...
+	@$(MAKE) bigtable-stop
 	@echo "Done!"
 
 .PHONY: test-coverage
-test-coverage: postgres-start
+test-coverage: postgres-start bigtable-start
 	@echo "Running tests with coverage..."
-	@POSTGRES_TEST_URL=$(POSTGRES_TEST_URL) go test -v -coverprofile=coverage.out ./pkg/...
+	@POSTGRES_TEST_URL=$(POSTGRES_TEST_URL) BIGTABLE_EMULATOR_HOST=$(BIGTABLE_EMULATOR_HOST) go test -v -count=1 -coverprofile=coverage.out ./pkg/...
 	@go tool cover -html=coverage.out -o coverage.html
+	@$(MAKE) bigtable-stop
 	@echo "Coverage report generated: coverage.html"
