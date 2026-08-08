@@ -3,7 +3,7 @@ module github.com/openshift-online/gecko/controllers
 go 1.26.4
 
 require (
-	cloud.google.com/go/secretmanager v1.20.0
+	cloud.google.com/go/secretmanager v1.21.0
 	github.com/go-logr/logr v1.4.4
 	github.com/openshift-online/gecko/platform-api v0.0.0-00010101000000-000000000000
 	github.com/openshift-online/maestro v0.0.0-20260722182402-e9c8bd7ccaa0
