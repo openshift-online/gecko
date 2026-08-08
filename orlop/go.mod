@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	cloud.google.com/go/spanner v1.94.0
 	github.com/evanphx/json-patch/v5 v5.9.11
-	github.com/go-chi/chi/v5 v5.0.10
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-chi/cors v1.2.1
 	github.com/go-logr/logr v1.4.4
 	github.com/go-logr/stdr v1.2.2
