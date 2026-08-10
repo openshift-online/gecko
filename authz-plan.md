@@ -601,6 +601,36 @@ and make it available in the request context.
 - Request without the header → 401
 - `/healthz` and `/readyz` are accessible without the header
 
+### Implementation Status: COMPLETE
+
+**Completed tasks:**
+1. Implemented `authn.Middleware` in `platform-api/pkg/authn/middleware.go`
+   - Reads `X-Endpoint-API-UserInfo` header, base64-decodes, extracts email
+   - Supports both standard and URL-safe base64 encoding (with/without padding)
+   - Returns 401 with JSON error body on missing/malformed header
+   - Exports `UserFromContext(ctx)` and `ContextWithUser(ctx, email)`
+2. Implemented `DevModeMiddleware` for `--disable-auth` local dev mode
+   - Reads `X-Dev-User` header, falls back to configurable default, then `dev@localhost`
+3. Full unit test suite (10 tests) in `platform-api/pkg/authn/middleware_test.go`:
+   - Valid header (standard and URL-safe base64)
+   - Missing header → 401
+   - Invalid base64 → 401
+   - Invalid JSON → 401
+   - Missing email claim → 401
+   - Empty email → 401
+   - Context helpers (UserFromContext, ContextWithUser)
+   - DevModeMiddleware with/without header, with/without default
+4. Wired into `main.go` — authn middleware added as first public API middleware
+   - When `--disable-auth` is set, uses `DevModeMiddleware` instead
+   - Health/readyz endpoints remain unprotected (registered before middleware in router)
+
+**Drifts / Notes:**
+- The `--disable-auth` localhost-only safety guard is enforced in the aggregated server's
+  `Complete()` method for the private API. The public API server doesn't currently enforce
+  this — it just uses `DevModeMiddleware`. The plan mentions the same guard should apply,
+  but the public server bind address is controlled by the shared `address` flag which is
+  already restricted by the private API's check. No additional enforcement needed.
+
 ---
 
 ## Phase 3: Cedar Authorization Engine

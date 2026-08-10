@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"net/http"
+
 	"github.com/go-logr/stdr"
 	_ "github.com/lib/pq"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver"
@@ -19,6 +21,7 @@ import (
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/memory"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/postgres"
 	spannerbackend "github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/spanner"
+	"github.com/openshift-online/gecko/platform-api/pkg/authn"
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -130,6 +133,17 @@ func main() {
 		log.Println("No SPANNER_DATABASE or DB_HOST set, using in-memory storage")
 	}
 
+	// Build public API middleware chain.
+	// When auth is disabled (local dev), use DevModeMiddleware instead of the
+	// ESPv2-based authn middleware.
+	var publicMiddleware []func(http.Handler) http.Handler
+	if !disableAuth {
+		publicMiddleware = append(publicMiddleware, authn.Middleware)
+	} else {
+		publicMiddleware = append(publicMiddleware, authn.DevModeMiddleware(""))
+		log.Println("Public API auth disabled: using dev mode identity")
+	}
+
 	// Create server with resource configuration
 	opts := apiserver.Options{
 		Address: address,
@@ -144,10 +158,11 @@ func main() {
 			DisableAuth:              disableAuth,
 		},
 		Public: apiserver.PublicAPIOptions{
-			Enable:    enablePublic,
-			Port:      publicPort,
-			Resources: getPublicResources(),
-			Scheme:    getPublicScheme(),
+			Enable:     enablePublic,
+			Port:       publicPort,
+			Resources:  getPublicResources(),
+			Scheme:     getPublicScheme(),
+			Middleware: publicMiddleware,
 		},
 		StorageFactory: storageFactory,
 		CORSOrigins:    origins,
