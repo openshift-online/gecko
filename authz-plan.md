@@ -25,7 +25,10 @@ retrofit later.
 | Storage strategy | Same database, additional `resources_*` tables (consistent with Cluster/NodePool) |
 | Platform-level scope | `PlatformRoleBinding` for platform-scoped admin access |
 | Entity cache strategy | Cache until dirty — invalidate on RoleBinding/PlatformRoleBinding writes |
-| Store wiring strategy | Stores passed explicitly to `Authorizer` at construction in `main.go` via `ResourceRegistry.GetStore()` |
+| Store wiring strategy | Add `PublicRegistry()` accessor to `apiserver.Server`; retrieve stores in `main.go` after server creation |
+| Auth disable flag | Existing `--disable-auth` covers both private and public APIs (no separate flag) |
+| Cross-namespace list strategy | Namespace-filter via `ListOptions.Namespaces` in storage layer (no post-filter interceptor) |
+| CustomValidator timing | Deferred to Phase 3 when ConfigMap loader provides the role label set |
 | Custom roles (future) | Service-admins create custom roles via API with Cedar conditions |
 
 ## Granular Permissions
@@ -326,19 +329,19 @@ Cedar's `in` operator is transitive.
 | GET | `/namespaces/{ns}/clusters/{name}` | `GetCluster` | Pre-filter |
 | PUT/PATCH | `/namespaces/{ns}/clusters/{name}` | `UpdateCluster` | Pre-filter |
 | DELETE | `/namespaces/{ns}/clusters/{name}` | `DeleteCluster` | Pre-filter |
-| GET | `/clusters` | `ListClusters` | **Post-filter** (cross-namespace) |
+| GET | `/clusters` | `ListClusters` | **Namespace-filter** (cross-namespace) |
 | GET | `/namespaces/{ns}/nodepools` | `ListNodepools` | Pre-filter |
 | POST | `/namespaces/{ns}/nodepools` | `CreateNodepool` | Pre-filter |
 | GET | `/namespaces/{ns}/nodepools/{name}` | `GetNodepool` | Pre-filter |
 | PUT/PATCH | `/namespaces/{ns}/nodepools/{name}` | `UpdateNodepool` | Pre-filter |
 | DELETE | `/namespaces/{ns}/nodepools/{name}` | `DeleteNodepool` | Pre-filter |
-| GET | `/nodepools` | `ListNodepools` | **Post-filter** (cross-namespace) |
+| GET | `/nodepools` | `ListNodepools` | **Namespace-filter** (cross-namespace) |
 | GET | `/namespaces/{ns}/rolebindings` | `ListRoleBindings` | Pre-filter |
 | POST | `/namespaces/{ns}/rolebindings` | `CreateRoleBinding` | Pre-filter |
 | GET | `/namespaces/{ns}/rolebindings/{name}` | `GetRoleBinding` | Pre-filter |
 | PUT/PATCH | `/namespaces/{ns}/rolebindings/{name}` | `UpdateRoleBinding` | Pre-filter |
 | DELETE | `/namespaces/{ns}/rolebindings/{name}` | `DeleteRoleBinding` | Pre-filter |
-| GET | `/rolebindings` | `ListRoleBindings` | **Post-filter** (cross-namespace) |
+| GET | `/rolebindings` | `ListRoleBindings` | **Namespace-filter** (cross-namespace) |
 | GET | `/platformrolebindings` | `ListPlatformRoleBindings` | Pre-filter (platform-scoped) |
 | POST | `/platformrolebindings` | `CreatePlatformRoleBinding` | Pre-filter |
 | GET | `/platformrolebindings/{name}` | `GetPlatformRoleBinding` | Pre-filter |
@@ -349,7 +352,7 @@ Cedar's `in` operator is transitive.
 | GET | `/namespaces/{ns}/customroles/{name}` | `GetCustomRole` | Pre-filter |
 | PUT/PATCH | `/namespaces/{ns}/customroles/{name}` | `UpdateCustomRole` | Pre-filter |
 | DELETE | `/namespaces/{ns}/customroles/{name}` | `DeleteCustomRole` | Pre-filter |
-| GET | `/customroles` | `ListCustomRoles` | **Post-filter** (cross-namespace) |
+| GET | `/customroles` | `ListCustomRoles` | **Namespace-filter** (cross-namespace) |
 
 ## Cross-Namespace List Authorization
 
@@ -360,11 +363,12 @@ The existing router registers cross-namespace list routes for every namespaced r
 absent from the URL, the storage layer returns objects from **all** namespaces. Authorization
 cannot be checked before the query because the target namespace is unknown.
 
-### Design: Post-Filter Authorization
+### Design: Namespace-Filter via ListOptions
 
-Cross-namespace list requests use the same Cedar action as namespaced lists (e.g.,
-`ListClusters`) but apply authorization **after** the storage query, filtering results to
-only the namespaces the principal is authorized to access.
+Cross-namespace list requests are authorized by **pre-computing the set of authorized
+namespaces** from the user's cached RoleBindings and injecting them into the storage
+query. The storage layer filters results at the database level using
+`WHERE namespace IN (...)`, so only authorized data is ever fetched.
 
 **Flow:**
 
@@ -374,52 +378,46 @@ GET /apis/.../clusters (no namespace in URL)
   ├─ 1. AuthN Middleware: extract user email (unchanged)
   │
   ├─ 2. AuthZ Middleware: detect cross-namespace list
-  │     a. No namespace in URL → skip pre-filter authz check
-  │     b. Set a context flag: crossNamespaceList = true
-  │     c. Pass through to handler
+  │     a. No namespace in URL → cross-namespace list detected
+  │     b. Query cached entity graph for user's RoleBindings
+  │     c. Compute authorized namespace set (namespaces where user has
+  │        the required action, e.g., ListClusters)
+  │     d. Inject authorized namespaces into request context
+  │     e. Skip the normal single-namespace authz check — pass through
   │
-  ├─ 3. Handler: List from store with empty namespace (returns all namespaces)
+  ├─ 3. Handler: read authorized namespaces from context
+  │     a. Set ListOptions.Namespaces = authorized namespace set
+  │     b. Store query: WHERE namespace IN (...) — only fetches authorized data
+  │     c. Pagination works natively (limit/continue apply to filtered set)
   │
-  └─ 4. Post-Filter Middleware (or response interceptor):
-        a. Read the response items
-        b. For each item, extract its namespace from metadata
-        c. Call authorizer.Authorize(email, ListClusters, Namespace::"<ns>")
-        d. Keep only items where authorization returns Allow
-        e. Return the filtered list (may be empty — never 403)
+  └─ 4. Return results (may be empty — never 403)
 ```
 
 **Key behaviors:**
-- A cross-namespace list **never returns 403**. If the user has no bindings anywhere, they
-  get an empty list — consistent with Kubernetes RBAC behavior.
-- Each item is independently authorized against its namespace. A user with `cluster-viewer`
-  in `ns1` but not `ns2` will see clusters from `ns1` only.
-- The Cedar entity graph (user → roles → namespaces) is already cached, so per-item
-  authorization checks are cheap — no additional DB queries.
+- A cross-namespace list **never returns 403**. If the user has no bindings anywhere, the
+  namespace set is empty and the query returns an empty list — consistent with Kubernetes
+  RBAC behavior.
+- Filtering happens at the database level, so no over-fetching occurs. Pagination
+  (`limit` and `continue`) works correctly without adjustment.
+- Each namespace in the authorized set was checked against the Cedar entity graph. A user
+  with `cluster-viewer` in `ns1` but not `ns2` gets `Namespaces = ["ns1"]` and sees
+  clusters from `ns1` only.
+- The Cedar entity graph (user → roles → namespaces) is already cached, so computing the
+  authorized namespace set requires no additional DB queries.
 
-### Implementation Approach
+### Implementation (orlop storage layer changes)
 
-The post-filter is implemented as a **response-intercepting middleware** that wraps the
-handler's `http.ResponseWriter`:
+1. **Add `Namespaces []string` to `storage.ListOptions`**: When non-empty and `Namespace`
+   is empty, the storage layer filters to the specified set of namespaces.
 
-1. When the authz middleware detects a cross-namespace list (namespaced resource, no
-   namespace in URL), it wraps the `ResponseWriter` with a buffer.
-2. The handler writes the JSON response to the buffer (not to the client).
-3. The middleware deserializes the response, filters items by per-namespace authorization,
-   and writes the filtered response to the real `ResponseWriter`.
-4. Pagination (`limit` and `continue`) interacts with post-filtering: the middleware must
-   request more items from the store than the client asked for, to account for filtered-out
-   items. This is handled by adjusting the `limit` query parameter upward and truncating
-   the response. If the filtered result is smaller than the requested limit, the middleware
-   may need to make additional store queries (via a store reference, not by re-calling the
-   handler).
+2. **Postgres store**: Add `WHERE namespace IN ($1, $2, ...)` clause to the `List()` query
+   when `Namespaces` is set. Use parameterized queries to prevent SQL injection.
 
-**Alternative approach (preferred if feasible):** Instead of response interception, inject
-a **namespace filter** into the store's `ListOptions` before the handler runs. The authz
-middleware pre-computes the set of namespaces the user is authorized for (from cached
-RoleBindings), and sets `ListOptions.Namespaces = [authorized namespaces]`. This avoids
-over-fetching and pagination issues entirely, but requires the storage layer to support
-multi-namespace filtering (a `WHERE namespace IN (...)` clause). This optimization can
-be deferred — the post-filter approach is correct and sufficient for initial implementation.
+3. **Memory store**: Add equivalent in-memory filter in the `List()` method — check
+   `namespace ∈ Namespaces` for each item.
+
+4. **Context helpers**: The authz middleware exports `AuthorizedNamespaces(ctx) []string`
+   for the handler to read and pass into `ListOptions`.
 
 ### Phase 3 Tasks (additions)
 
@@ -427,13 +425,20 @@ The cross-namespace list implementation is part of Phase 3 (Cedar Authorization 
 
 1. **Detect cross-namespace list in authz middleware**: check for namespaced resource with
    empty namespace URL param
-2. **Implement response-intercepting post-filter**: buffer, deserialize, per-item authz,
-   re-serialize
-3. **Handle pagination**: adjust limits, manage `continue` tokens across filtered results
-4. **Write tests**: verify filtered results per namespace, empty result for no bindings,
-   mixed access across namespaces
+2. **Pre-compute authorized namespace set**: query cached entity graph for the user's
+   RoleBindings, extract namespaces where the user has the required Cedar action
+3. **Extend `ListOptions` in orlop**: add `Namespaces []string` field, update Postgres
+   and Memory store `List()` implementations
+4. **Inject namespaces into context**: authz middleware sets authorized namespaces on the
+   request context; handler reads them into `ListOptions`
+5. **Write tests**: verify filtered results per namespace, empty result for no bindings,
+   mixed access across namespaces, pagination correctness
 
 ## File Structure (New Files)
+
+**Note**: `platform-api/pkg/` is a new directory. Currently all reusable code lives in
+`orlop/pkg/`; this is the first application-level package directory in the `platform-api`
+module.
 
 ```
 platform-api/
@@ -512,19 +517,17 @@ projections, and register them with the server.
    before proceeding to Phase 2. Write a smoke test that starts the server with an
    in-memory store and verifies these routes respond correctly.
 
-7. **Add `CustomValidator`** to `RoleBinding` and `PlatformRoleBinding` that validates
-   `roleRef` against the set of known role labels loaded from the ConfigMap
-
-8. **No status subresource**: `RoleBinding` and `PlatformRoleBinding` are simple binding
+7. **No status subresource**: `RoleBinding` and `PlatformRoleBinding` are simple binding
    records with no controller-managed status. They do **not** use
    `+kubebuilder:subresource:status` — unlike `Cluster` and `NodePool`, there are no
    `/status` sub-routes for these resources.
 
+**Note**: `CustomValidator` for `roleRef` validation is deferred to Phase 3 (Task 10),
+when the ConfigMap loader provides the role label set.
+
 ### Acceptance Criteria
 - `GET /apis/gcp.managed.openshift.io/v1/namespaces/test/rolebindings` returns empty list
 - `POST /apis/gcp.managed.openshift.io/v1/namespaces/test/rolebindings` creates a binding
-  (with valid `roleRef`)
-- `POST` with unknown `roleRef` returns validation error
 - `GET /apis/gcp.managed.openshift.io/v1/platformrolebindings` returns empty list
 - Cluster-scoped CRUD routes for `PlatformRoleBinding` respond correctly (smoke test)
 
@@ -564,12 +567,11 @@ and make it available in the request context.
 
 ### Notes
 - ESPv2 validates the JWT before forwarding — Gecko trusts the header without re-validating
-- For local development without ESPv2, add a `--disable-public-auth` flag that disables
-  both authn and authz on the public API. This mirrors the existing `--disable-auth` flag
-  on the private API (which disables both authn and authz there). When set, the middleware
-  injects a dev user identity from an env var or header (e.g., `X-Dev-User`) and skips
-  Cedar authorization. The same localhost-only safety guard from the private API applies:
-  `--disable-public-auth` requires binding to `127.0.0.1`.
+- For local development without ESPv2, the existing `--disable-auth` flag is extended to
+  cover the public API in addition to the private API. When set, the authn middleware
+  injects a dev user identity from an env var or header (e.g., `X-Dev-User`) and the authz
+  middleware is skipped entirely. The same localhost-only safety guard from the private API
+  applies: `--disable-auth` requires binding to `127.0.0.1`.
 
 ### Acceptance Criteria
 - Request with valid `X-Endpoint-API-UserInfo` → passes through with email in context
@@ -595,7 +597,7 @@ Cedar decisions against policies generated from the ConfigMap and a DB-backed en
 2. **Implement ConfigMap loader** in `platform-api/pkg/authz/config.go`
    - Parse `roles.yaml`: extract role names, scopes, and permission lists
    - Parse `bootstrap.yaml`: extract initial PlatformRoleBinding definitions
-   - Build a role label validation set (used by `CustomValidator` in Phase 1)
+   - Build a role label validation set (used by `CustomValidator` in Task 10)
    - Export `RoleConfig` struct with loaded data
 
 3. **Implement Cedar policy generator** in `platform-api/pkg/authz/policygen.go`
@@ -608,24 +610,19 @@ Cedar decisions against policies generated from the ConfigMap and a DB-backed en
 4. **Implement `GeckoEntityGetter`** in `platform-api/pkg/authz/entities.go`
     - Implements `cedar.EntityGetter` interface
     - Backed by `RoleBinding` and `PlatformRoleBinding` `ResourceStore` instances
-    - **Store wiring**: The `ResourceRegistry` exposes `GetStore(GroupKind)` which returns
-      the shared `ResourceStore` for any registered resource. In `main.go`, after creating
-      the `apiserver.Server` (which internally creates registries and registers resources),
-      the authz setup retrieves the needed stores:
+    - **Store wiring**: Add a `PublicRegistry()` accessor method to `apiserver.Server` that
+      returns the public `ResourceRegistry`. In `main.go`, after creating the server,
+      retrieve the needed stores:
       ```go
-      // In main.go, after server/registry creation:
-      rbStore := publicRegistry.GetStore(schema.GroupKind{
+      // In main.go, after server creation:
+      rbStore := server.PublicRegistry().GetStore(schema.GroupKind{
           Group: "gcp.managed.openshift.io", Kind: "RoleBinding"})
-      prbStore := publicRegistry.GetStore(schema.GroupKind{
+      prbStore := server.PublicRegistry().GetStore(schema.GroupKind{
           Group: "gcp.managed.openshift.io", Kind: "PlatformRoleBinding"})
       entityGetter := authz.NewEntityGetter(rbStore, prbStore)
       ```
-      **Note**: This requires the `ResourceRegistry` to be accessible from `main.go`.
-      Currently `apiserver.Server` does not expose its internal registries. Two options:
-      (a) Create the `ResourceRegistry` in `main.go` before passing it to `apiserver.New()`
-      (restructure to pass a registry instead of raw `Resources` + `Scheme`), or
-      (b) Add a `PublicRegistry()` accessor to `apiserver.Server`. Option (a) is preferred
-      as it keeps orlop unchanged and gives `main.go` full control over resource registration.
+      This requires a small addition to orlop (`Server.PublicRegistry() *ResourceRegistry`)
+      but avoids restructuring the server construction flow.
     - Entity construction logic:
      - `User::"email"` → query RoleBindings by subject, build parents as NamespaceRole
        entities; query PlatformRoleBindings, build parents as PlatformRole entities
@@ -664,8 +661,12 @@ Cedar decisions against policies generated from the ConfigMap and a DB-backed en
    - `authorizer_test.go`: policy evaluation unit tests for all role/action combinations
    - `entities_test.go`: entity graph construction from mock stores
    - `cache_test.go`: cache population, hit, and invalidation
-   - `middleware_test.go`: HTTP integration tests with in-memory stores
+   - `middleware_test.go`: HTTP integration tests with in-memory stores, including
+     cross-namespace list filtering and namespace-filter injection
    - `config_test.go`: ConfigMap parsing edge cases
+   - `CustomValidator` tests: valid/invalid roleRef, wrong-scope roleRef
+   - `ListOptions.Namespaces` tests: Postgres `WHERE IN` query, Memory store filter,
+     empty namespace set returns empty results
 
 9. **Wire authz middleware** in `platform-api/cmd/platform-api-server/main.go`
    ```go
@@ -676,6 +677,22 @@ Cedar decisions against policies generated from the ConfigMap and a DB-backed en
        },
    },
    ```
+
+10. **Add `CustomValidator`** to `RoleBinding` and `PlatformRoleBinding` (deferred from
+    Phase 1). Now that the ConfigMap loader (Task 2) provides the role label set, the
+    validator can reference it directly:
+    - `RoleBinding`: validate `roleRef` is a known namespace-scoped role
+    - `PlatformRoleBinding`: validate `roleRef` is a known platform-scoped role
+    - Reject unknown or wrong-scope `roleRef` values with a validation error
+
+11. **Extend `ListOptions` with `Namespaces` in orlop storage layer**
+    - Add `Namespaces []string` field to `storage.ListOptions`
+    - Update Postgres store `List()`: when `Namespaces` is non-empty and `Namespace` is
+      empty, add `WHERE namespace IN (...)` with parameterized queries
+    - Update Memory store `List()`: add equivalent in-memory filter
+    - Add `AuthorizedNamespaces(ctx) []string` context helper in the authz package
+    - Cross-namespace list handler reads authorized namespaces from context and passes
+      them to `ListOptions.Namespaces`
 
 ### Acceptance Criteria
 - `cluster-viewer` can GET and LIST clusters/nodepools in their namespace, gets 403 on
@@ -689,6 +706,10 @@ Cedar decisions against policies generated from the ConfigMap and a DB-backed en
 - No role grants cross-scope access (e.g., cluster-admin cannot manage rolebindings,
   service-admin cannot manage clusters)
 - A user with a valid authn token but no bindings gets 403 on everything
+- `POST` RoleBinding with unknown `roleRef` returns validation error
+- `POST` PlatformRoleBinding with a namespace-scoped `roleRef` returns validation error
+- Cross-namespace `GET /clusters` returns only clusters from authorized namespaces
+- Cross-namespace list with no bindings returns empty list (not 403)
 
 ---
 
@@ -764,7 +785,7 @@ POST /apis/gcp.managed.openshift.io/v1/namespaces/project-a/rolebindings
 
 3. **AuthN middleware tests** (`authn/middleware_test.go`)
    - All edge cases: missing header, invalid base64, missing email, empty email
-   - Dev mode bypass (`--disable-public-auth` flag)
+   - Dev mode bypass (`--disable-auth` flag)
 
 4. **Entity getter tests** (`authz/entities_test.go`)
    - User with no bindings → sparse entity graph
