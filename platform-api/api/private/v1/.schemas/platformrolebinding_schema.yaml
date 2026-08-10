@@ -1,0 +1,36 @@
+properties:
+  apiVersion:
+    description: |-
+      APIVersion defines the versioned schema of this representation of an object.
+      Servers should convert recognized schemas to the latest internal value, and
+      may reject unrecognized values.
+      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+    type: string
+  kind:
+    description: |-
+      Kind is a string value representing the REST resource this object represents.
+      Servers may infer this from the endpoint the client submits requests to.
+      Cannot be updated.
+      In CamelCase.
+      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+    type: string
+  metadata:
+    type: object
+  spec:
+    description: PlatformRoleBindingSpec binds a user (by email) to a platform-scoped
+      role.
+    properties:
+      roleRef:
+        description: RoleRef is the name of the role to bind (must reference a known
+          platform-scoped role).
+        minLength: 1
+        type: string
+      subject:
+        description: Subject is the user email to bind the role to.
+        minLength: 1
+        type: string
+    required:
+    - roleRef
+    - subject
+    type: object
+type: object

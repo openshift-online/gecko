@@ -531,6 +531,29 @@ when the ConfigMap loader provides the role label set.
 - `GET /apis/gcp.managed.openshift.io/v1/platformrolebindings` returns empty list
 - Cluster-scoped CRUD routes for `PlatformRoleBinding` respond correctly (smoke test)
 
+### Implementation Status: COMPLETE
+
+**Completed tasks:**
+1. Defined `RoleBinding` type (namespaced) — `platform-api/api/private/v1/rolebinding_types.go`
+2. Defined `PlatformRoleBinding` type (cluster-scoped) — `platform-api/api/private/v1/platformrolebinding_types.go`
+3. Types registered via `init()` + `register()` following existing pattern
+4. Ran `orlop-gen` — all generated files created successfully (public types, schemas, deepcopy, conversion)
+5. `ResourceInfo` wiring automatic via `GetResourceInfos()` — no changes to `resources.go` needed
+6. Smoke test written and passing in `platform-api/test/authz_resources_test.go`:
+   - RoleBinding full CRUD lifecycle (namespaced)
+   - PlatformRoleBinding full CRUD lifecycle (cluster-scoped)
+   - Cross-namespace list for RoleBinding
+   - Schema validation (empty subject rejected)
+7. No `+kubebuilder:subresource:status` — confirmed no status field on these types
+
+**Drifts / Notes:**
+- `resources.go` required **zero changes** — the generated `GetResourceInfos()` automatically includes
+  new types. The plan mentioned "Wire ResourceInfo in resources.go" but the existing pattern handles
+  this via the generated `zz_generated.schemas.go`.
+- The router registers `/status` routes for all resources generically. Since `RoleBinding` and
+  `PlatformRoleBinding` have no `Status` field, the status route is effectively a no-op update.
+  This is harmless and doesn't violate the "no status subresource" intent.
+
 ---
 
 ## Phase 2: Authentication Middleware
