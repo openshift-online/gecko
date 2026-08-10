@@ -16,12 +16,14 @@ import (
 
 	"github.com/go-logr/stdr"
 	_ "github.com/lib/pq"
+	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/memory"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/postgres"
 	spannerbackend "github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/spanner"
 	"github.com/openshift-online/gecko/platform-api/pkg/authn"
+	"github.com/openshift-online/gecko/platform-api/pkg/authz"
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -38,6 +40,7 @@ func main() {
 		authnKubeconfig string
 		authzKubeconfig string
 		disableAuth     bool
+		authzConfigDir  string
 	)
 
 	flag.StringVar(&address, "address", "0.0.0.0", "address to bind to")
@@ -50,6 +53,7 @@ func main() {
 	flag.StringVar(&authnKubeconfig, "authentication-kubeconfig", "", "kubeconfig for delegated authentication (in-cluster if empty)")
 	flag.StringVar(&authzKubeconfig, "authorization-kubeconfig", "", "kubeconfig for delegated authorization (in-cluster if empty)")
 	flag.BoolVar(&disableAuth, "disable-auth", false, "disable authentication/authorization (for testing/local dev)")
+	flag.StringVar(&authzConfigDir, "authz-config", "/etc/gecko/authz", "path to authz ConfigMap mount (roles.yaml, bootstrap.yaml)")
 	flag.Parse()
 
 	logger := stdr.New(nil)
@@ -133,12 +137,54 @@ func main() {
 		log.Println("No SPANNER_DATABASE or DB_HOST set, using in-memory storage")
 	}
 
+	// Load authz configuration (roles and bootstrap bindings) from ConfigMap.
+	// This is loaded before server creation so policies are ready when the
+	// middleware starts processing requests.
+	var roleConfig *authz.RoleConfig
+	var authorizer *authz.Authorizer
+	if !disableAuth {
+		var err error
+		roleConfig, err = authz.LoadConfig(authzConfigDir)
+		if err != nil {
+			log.Printf("Warning: failed to load authz config from %s: %v (authorization will deny all requests)", authzConfigDir, err)
+			// Create a minimal config with no roles — all requests will be denied
+			roleConfig = &authz.RoleConfig{
+				RoleLabels:          make(map[string]bool),
+				NamespaceRoleLabels: make(map[string]bool),
+				PlatformRoleLabels:  make(map[string]bool),
+			}
+		} else {
+			log.Printf("Loaded %d roles from authz config", len(roleConfig.Roles))
+			// Set the global role ref validator so RoleBinding/PlatformRoleBinding
+			// types can validate roleRef against known roles.
+			authz.SetRoleValidator(roleConfig)
+			privatev1.RoleRefValidator = func(roleRef, scope string) error {
+				if scope == "namespace" {
+					return authz.ValidateNamespaceRoleRef(roleRef)
+				}
+				return authz.ValidatePlatformRoleRef(roleRef)
+			}
+		}
+
+		// Generate Cedar policies from role definitions
+		policies, err := authz.GeneratePolicies(roleConfig.Roles)
+		if err != nil {
+			log.Fatalf("Failed to generate Cedar policies: %v", err)
+		}
+
+		// Create entity getter and authorizer (stores will be set after server creation)
+		cache := authz.NewEntityCache()
+		entityGetter := authz.NewEntityGetter(nil, nil, cache)
+		authorizer = authz.NewAuthorizer(policies, entityGetter)
+	}
+
 	// Build public API middleware chain.
 	// When auth is disabled (local dev), use DevModeMiddleware instead of the
 	// ESPv2-based authn middleware.
 	var publicMiddleware []func(http.Handler) http.Handler
 	if !disableAuth {
 		publicMiddleware = append(publicMiddleware, authn.Middleware)
+		publicMiddleware = append(publicMiddleware, authz.NewMiddleware(authorizer))
 	} else {
 		publicMiddleware = append(publicMiddleware, authn.DevModeMiddleware(""))
 		log.Println("Public API auth disabled: using dev mode identity")
@@ -172,6 +218,31 @@ func main() {
 	server, err := apiserver.New(opts)
 	if err != nil {
 		log.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Wire authz stores now that the server is created and stores are available.
+	if !disableAuth && server.PublicRegistry() != nil {
+		rbStore := server.PublicRegistry().GetStore(runtimeschema.GroupKind{
+			Group: "gcp.managed.openshift.io", Kind: "RoleBinding"})
+		prbStore := server.PublicRegistry().GetStore(runtimeschema.GroupKind{
+			Group: "gcp.managed.openshift.io", Kind: "PlatformRoleBinding"})
+
+		if rbStore != nil && prbStore != nil {
+			// Update the entity getter with the actual stores
+			cache := authz.NewEntityCache()
+			entityGetter := authz.NewEntityGetter(rbStore, prbStore, cache)
+			authorizer.SetEntityGetter(entityGetter)
+			log.Println("Authorization stores wired successfully")
+		} else {
+			log.Println("Warning: could not retrieve authz stores from registry")
+		}
+
+		// Run bootstrap: upsert initial PlatformRoleBindings from config
+		if roleConfig != nil && len(roleConfig.BootstrapBindings) > 0 && prbStore != nil {
+			if err := authz.RunBootstrap(context.Background(), prbStore, roleConfig.BootstrapBindings); err != nil {
+				log.Printf("Warning: bootstrap failed: %v", err)
+			}
+		}
 	}
 
 	// Setup signal handling for graceful shutdown

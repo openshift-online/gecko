@@ -1,6 +1,16 @@
 package v1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"context"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+)
+
+// RoleRefValidator is a hook for external validation of roleRef fields.
+// It is set at startup by the authz package to validate against known roles.
+// If nil, no roleRef validation is performed.
+var RoleRefValidator func(roleRef string, scope string) error
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced
@@ -34,6 +44,27 @@ type RoleBindingSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	RoleRef string `json:"roleRef"`
+}
+
+// ValidateCreate validates the RoleBinding on creation.
+func (rb *RoleBinding) ValidateCreate(_ context.Context) error {
+	if RoleRefValidator != nil {
+		return RoleRefValidator(rb.Spec.RoleRef, "namespace")
+	}
+	return nil
+}
+
+// ValidateUpdate validates the RoleBinding on update.
+func (rb *RoleBinding) ValidateUpdate(_ context.Context, _ runtime.Object) error {
+	if RoleRefValidator != nil {
+		return RoleRefValidator(rb.Spec.RoleRef, "namespace")
+	}
+	return nil
+}
+
+// ValidateDelete is a no-op for RoleBinding.
+func (rb *RoleBinding) ValidateDelete(_ context.Context) error {
+	return nil
 }
 
 func init() { register(&RoleBinding{}, &RoleBindingList{}) }

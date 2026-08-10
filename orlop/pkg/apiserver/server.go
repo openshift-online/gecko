@@ -21,6 +21,7 @@ type Server struct {
 	publicRouter     chi.Router
 	publicServer     *http.Server
 	aggregatedServer *aggregated.AggregatedServer
+	publicRegistry   *ResourceRegistry
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	options          Options
@@ -190,6 +191,7 @@ func New(opts Options) (*Server, error) {
 
 		server.publicRouter = publicRouter
 		server.publicServer = publicServer
+		server.publicRegistry = publicRegistry
 	}
 
 	return server, nil
@@ -230,6 +232,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// PublicRegistry returns the public API ResourceRegistry.
+// This can be used to retrieve stores for public API resource types
+// (e.g., for building authorization entity graphs).
+// Returns nil if the public API is not enabled.
+func (s *Server) PublicRegistry() *ResourceRegistry {
+	return s.publicRegistry
 }
 
 // PrivateAddress returns the private server's listen address.

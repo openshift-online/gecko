@@ -236,6 +236,15 @@ func (h *ConvertingResourceHandler) List(w http.ResponseWriter, r *http.Request)
 		Namespace: namespace,
 	}
 
+	// Apply authorized namespaces filter for cross-namespace lists.
+	// When authorization middleware restricts access to specific namespaces,
+	// it injects the authorized set into the context.
+	if namespace == "" {
+		if authzNS := storage.AuthorizedNamespacesFromContext(r.Context()); authzNS != nil {
+			opts.Namespaces = authzNS
+		}
+	}
+
 	// Parse label selector from query parameter
 	if labelSelectorStr := r.URL.Query().Get(constants.QueryParamLabelSelector); labelSelectorStr != "" {
 		opts.LabelSelector = labelSelectorStr

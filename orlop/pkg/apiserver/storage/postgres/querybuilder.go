@@ -61,6 +61,16 @@ func (qb *QueryBuilder) WhereNamespace(namespace string) *QueryBuilder {
 	return qb
 }
 
+// WhereNamespaces adds a multi-namespace filter using IN clause.
+// Used for cross-namespace list authorization.
+func (qb *QueryBuilder) WhereNamespaces(namespaces []string) *QueryBuilder {
+	if len(namespaces) == 0 {
+		return qb
+	}
+	qb.Where(fmt.Sprintf("namespace = ANY($%d)", qb.argNum), pq.Array(namespaces))
+	return qb
+}
+
 // WhereLabelSelector adds label selector filtering using JSONB operators.
 func (qb *QueryBuilder) WhereLabelSelector(labelSelector labels.Selector) *QueryBuilder {
 	if labelSelector == nil {

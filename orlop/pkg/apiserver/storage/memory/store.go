@@ -254,9 +254,16 @@ func (s *MemoryStore) List(ctx context.Context, opts storage.ListOptions) (clien
 		}
 		// Use the base key (without filter prefix) for namespace matching
 		baseKey := s.stripFilterPrefix(key)
-		// Filter by namespace
+		// Filter by namespace (single)
 		if opts.Namespace != "" && !s.matchesNamespace(baseKey, opts.Namespace) {
 			continue
+		}
+		// Filter by namespaces (multi-namespace authorization filter)
+		if opts.Namespace == "" && len(opts.Namespaces) > 0 {
+			ns, _ := s.parseKey(baseKey)
+			if !stringSliceContains(opts.Namespaces, ns) {
+				continue
+			}
 		}
 		keys = append(keys, key)
 	}
@@ -616,6 +623,16 @@ func fieldValueFromMap(m map[string]interface{}, path string) string {
 	}
 	s, _ := current.(string)
 	return s
+}
+
+// stringSliceContains checks if a string is in a slice.
+func stringSliceContains(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
 }
 
 // int64Ptr returns a pointer to an int64 value.

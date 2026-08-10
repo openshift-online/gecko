@@ -736,6 +736,9 @@ func (s *PostgresStore) buildListQuery(opts storage.ListOptions, filterValue str
 	// Build query using fluent API
 	qb := NewQueryBuilder(s.tableName, "namespace", "name", "resource_version", "data")
 	qb.WhereNamespace(opts.Namespace)
+	if opts.Namespace == "" && len(opts.Namespaces) > 0 {
+		qb.WhereNamespaces(opts.Namespaces)
+	}
 	qb.WhereLabelSelector(labelSelector)
 	qb.WhereShardSelector(opts.ShardSelector)
 	qb.WhereFieldFilters(opts.FieldFilters)

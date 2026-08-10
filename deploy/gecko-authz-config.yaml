@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gecko-authz-config
+  namespace: gecko-system
+data:
+  roles.yaml: |
+    roles:
+      - name: cluster-viewer
+        scope: namespace
+        permissions:
+          - cluster.list
+          - cluster.get
+          - nodepool.list
+          - nodepool.get
+
+      - name: cluster-admin
+        scope: namespace
+        permissions:
+          - cluster.create
+          - cluster.list
+          - cluster.get
+          - cluster.update
+          - cluster.delete
+          - nodepool.create
+          - nodepool.list
+          - nodepool.get
+          - nodepool.update
+          - nodepool.delete
+
+      - name: service-admin
+        scope: namespace
+        permissions:
+          - rolebinding.create
+          - rolebinding.list
+          - rolebinding.get
+          - rolebinding.update
+          - rolebinding.delete
+          - customrole.create
+          - customrole.list
+          - customrole.get
+          - customrole.update
+          - customrole.delete
+
+      - name: platform-admin
+        scope: platform
+        permissions:
+          - platformrolebinding.create
+          - platformrolebinding.list
+          - platformrolebinding.get
+          - platformrolebinding.update
+          - platformrolebinding.delete
+
+  bootstrap.yaml: |
+    platformRoleBindings:
+      - name: bootstrap-admin
+        subject: operator@example.com
+        roleRef: platform-admin

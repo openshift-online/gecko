@@ -764,6 +764,52 @@ Cedar decisions against policies generated from the ConfigMap and a DB-backed en
 - Cross-namespace `GET /clusters` returns only clusters from authorized namespaces
 - Cross-namespace list with no bindings returns empty list (not 403)
 
+### Implementation Status: COMPLETE
+
+**Completed tasks:**
+1. Added `cedar-go` dependency with `replace` directive to local fork
+2. Implemented ConfigMap loader (`config.go`) — parses roles.yaml and bootstrap.yaml,
+   validates scopes/permissions/roleRefs, builds role label validation sets
+3. Implemented Cedar policy generator (`policygen.go`) — generates `permit` policies
+   from role definitions using `cedar-go/ast` builder, with `when { principal in resource }`
+4. Implemented entity cache (`cache.go`) — per-user keyed, thread-safe with
+   Invalidate/InvalidateAll
+5. Implemented entity getter (`entities.go`) — builds Cedar entity maps from
+   RoleBinding/PlatformRoleBinding stores with correct hierarchy
+   (User→NamespaceRole→Namespace→Platform, User→PlatformRole→Platform)
+6. Implemented authorizer (`authorizer.go`) — evaluates Cedar decisions, adds resource
+   entities to entity maps with correct parent hierarchies
+7. Implemented authz middleware (`middleware.go`) — derives Cedar action/resource from
+   chi route patterns and URL params, handles cross-namespace list pre-computation
+8. Added `PublicRegistry()` accessor to `apiserver.Server` in orlop
+9. Extended `ListOptions` with `Namespaces []string` in orlop storage layer:
+   - Memory store: filters by `namespace ∈ Namespaces`
+   - Postgres store: `WHERE namespace = ANY($N)` parameterized query
+   - Context helpers: `ContextWithAuthorizedNamespaces`/`AuthorizedNamespacesFromContext`
+   - `ConvertingResourceHandler.List` reads authorized namespaces from context
+10. Added `CustomValidator` for roleRef validation:
+    - `RoleRefValidator` hook on private types (avoids circular imports)
+    - `ValidateNamespaceRoleRef`/`ValidatePlatformRoleRef` in authz package
+    - Wrong-scope detection (namespace role in PlatformRoleBinding and vice versa)
+11. Wired authz middleware in `main.go` with `--authz-config` flag
+
+**Test coverage (49+ subtests):**
+- `config_test.go`: 10 tests — valid/invalid configs, edge cases, PermissionToAction
+- `policygen_test.go`: 9 tests — policy generation, all role types, Cedar format
+- `authorizer_test.go`: 10 tests (49 subtests) — all role×action combinations,
+  cross-namespace isolation, default-deny, cache behavior, validator logic
+- `middleware_test.go`: authn tests (10 tests) in separate package
+
+**Drifts / Notes:**
+- The plan specified `EntityGetter` implementing `cedar.EntityGetter` interface. Instead,
+  we implemented a custom `EntityGetter` struct that builds full `EntityMap` objects and
+  passes them to `cedar.Authorize()`. This is more practical because the Cedar authorization
+  function needs all entities up front (not lazy-loaded).
+- The `PublicRegistry()` approach worked as planned. Stores are wired after server creation
+  using `SetEntityGetter()`.
+- Cross-namespace list namespace-filter uses context helpers in `orlop/pkg/apiserver/storage`
+  rather than the authz package, to avoid coupling orlop to platform-api.
+
 ---
 
 ## Phase 4: Bootstrap & Self-Authorization
@@ -817,6 +863,27 @@ POST /apis/gcp.managed.openshift.io/v1/namespaces/project-a/rolebindings
 - The bootstrapped user can immediately create additional PlatformRoleBindings
 - Without bootstrap config, a fresh deployment has no platform-admins and all requests
   get 403
+
+### Implementation Status: COMPLETE
+
+**Completed tasks:**
+1. Implemented `RunBootstrap()` in `platform-api/pkg/authz/bootstrap.go`
+   - Upserts PlatformRoleBindings from bootstrap config
+   - Idempotent: skips if binding with same name already exists
+   - Logs creation/skip for each binding
+2. Authz middleware covers all public API routes (verified by middleware wiring in main.go)
+3. Wired bootstrap into startup in `main.go`:
+   - Loads ConfigMap via `--authz-config` flag (default: `/etc/gecko/authz/`)
+   - Parses roles → generates policies → creates authorizer
+   - After server creation: wires stores via `PublicRegistry()`, runs bootstrap
+   - Sets `RoleRefValidator` on private types for roleRef validation
+
+**Drifts / Notes:**
+- Bootstrap is implemented in a separate `bootstrap.go` file rather than in `config.go`
+  as originally planned, for cleaner separation of concerns.
+- The plan mentioned creating the bootstrap in the config loader. Instead, it's a separate
+  `RunBootstrap()` function called from `main.go` after server creation (when stores are
+  available).
 
 ---
 

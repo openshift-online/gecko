@@ -7,6 +7,24 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// authorizedNamespacesKey is the context key for authorized namespaces
+// injected by authorization middleware for cross-namespace list queries.
+type authorizedNamespacesKey struct{}
+
+// ContextWithAuthorizedNamespaces returns a new context with the authorized
+// namespace set. Used by authorization middleware to restrict cross-namespace
+// list queries to only the namespaces the user has access to.
+func ContextWithAuthorizedNamespaces(ctx context.Context, namespaces []string) context.Context {
+	return context.WithValue(ctx, authorizedNamespacesKey{}, namespaces)
+}
+
+// AuthorizedNamespacesFromContext retrieves the authorized namespaces from the
+// context. Returns nil if not set (meaning no namespace restriction applies).
+func AuthorizedNamespacesFromContext(ctx context.Context) []string {
+	v, _ := ctx.Value(authorizedNamespacesKey{}).([]string)
+	return v
+}
+
 // ListOptions extends metav1.ListOptions with storage-specific options.
 type ListOptions struct {
 	metav1.ListOptions
@@ -14,6 +32,12 @@ type ListOptions struct {
 	// Namespace limits results to a specific namespace.
 	// Empty string means all namespaces.
 	Namespace string
+
+	// Namespaces limits results to the specified set of namespaces.
+	// When non-empty and Namespace is empty, the storage layer filters results
+	// to only these namespaces (used for cross-namespace list authorization).
+	// Namespace takes precedence over Namespaces if both are set.
+	Namespaces []string
 
 	// ShardSelector specifies which shard of results to return.
 	// Nil means return all results (no sharding).
