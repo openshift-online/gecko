@@ -222,3 +222,51 @@ func TestBuild_GenerationAnnotation(t *testing.T) {
 
 	require.Equal(t, "3", mw.Annotations["hyperfleet.io/generation"])
 }
+
+// getHostedClusterGCPSpec parses the HostedCluster CR (manifest index 3) from
+// the built ManifestWork and returns the spec.platform.gcp map.
+// It verifies the manifest is indeed a HostedCluster before returning.
+func getHostedClusterGCPSpec(t *testing.T, input manifest.Input) map[string]any {
+	t.Helper()
+	mw, err := manifest.Build(input)
+	require.NoError(t, err)
+
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal(mw.Spec.Workload.Manifests[3].Raw, &obj))
+	require.Equal(t, "HostedCluster", obj["kind"], "manifest[3] must be a HostedCluster CR")
+	require.Equal(t, "hypershift.openshift.io/v1beta1", obj["apiVersion"])
+
+	spec := obj["spec"].(map[string]any)
+	platform := spec["platform"].(map[string]any)
+	require.Equal(t, "GCP", platform["type"])
+	return platform["gcp"].(map[string]any)
+}
+
+func TestBuild_HostedClusterCR_ResourceLabels_PresentWhenGoogPartnerSolutionSet(t *testing.T) {
+	input := testInput()
+	input.GoogPartnerSolution = "isol_psn_0014m00001h31bnqaq_openshift"
+
+	gcp := getHostedClusterGCPSpec(t, input)
+
+	labels, ok := gcp["resourceLabels"]
+	require.True(t, ok, "HostedCluster spec.platform.gcp.resourceLabels should be present when GoogPartnerSolution is set")
+
+	// json.Unmarshal decodes JSON arrays as []interface{}, elements as map[string]interface{}.
+	labelSlice, ok := labels.([]interface{})
+	require.True(t, ok, "spec.platform.gcp.resourceLabels should be a slice")
+	require.Len(t, labelSlice, 1)
+	entry, ok := labelSlice[0].(map[string]interface{})
+	require.True(t, ok, "spec.platform.gcp.resourceLabels[0] should be a map")
+	require.Equal(t, "goog-partner-solution", entry["key"])
+	require.Equal(t, "isol_psn_0014m00001h31bnqaq_openshift", entry["value"])
+}
+
+func TestBuild_HostedClusterCR_ResourceLabels_AbsentWhenGoogPartnerSolutionEmpty(t *testing.T) {
+	input := testInput()
+	input.GoogPartnerSolution = "" // empty — label not available from placement
+
+	gcp := getHostedClusterGCPSpec(t, input)
+
+	_, ok := gcp["resourceLabels"]
+	require.False(t, ok, "HostedCluster spec.platform.gcp.resourceLabels should be absent when GoogPartnerSolution is empty")
+}

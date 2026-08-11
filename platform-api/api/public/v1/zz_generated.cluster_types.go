@@ -152,6 +152,13 @@ type ClusterStatus struct {
 
 // PlacementResult holds the placement controller's output.
 type PlacementResult struct {
+
+	// GoogPartnerSolution is the value of the goog-partner-solution GCP resource label,
+	// read from the meta_common_labels field of the region's argocd-cluster Secret Manager secret.
+	// Consumed by the hc-controller to set spec.platform.gcp.resourceLabels on the HostedCluster CR.
+	// Empty when the label is not present in the secret (e.g. RoundRobinSelector environments).
+
+	GoogPartnerSolution string `json:"googPartnerSolution,omitempty"`
 }
 
 // HostedClusterResult holds the hc-adapter's output from ManifestWork status feedback.

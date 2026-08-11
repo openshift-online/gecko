@@ -21,13 +21,14 @@ import (
 
 // mockSelector is a simple Selector implementation for tests.
 type mockSelector struct {
-	mcName     string
-	baseDomain string
-	err        error
+	mcName              string
+	baseDomain          string
+	googPartnerSolution string
+	err                 error
 }
 
-func (m *mockSelector) Select(_ context.Context, _ []Candidate) (string, string, error) {
-	return m.mcName, m.baseDomain, m.err
+func (m *mockSelector) Select(_ context.Context, _ []Candidate) (string, string, string, error) {
+	return m.mcName, m.baseDomain, m.googPartnerSolution, m.err
 }
 
 // testLogger creates a logger for tests.
@@ -159,6 +160,14 @@ func TestReconciler(t *testing.T) {
 			name:           "happy path: selects MC and domain, updates status",
 			clusterID:      "cluster-1",
 			cluster:        buildCluster("cluster-1", false),
+			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com", googPartnerSolution: "isol_psn_0014m00001h31bnqaq_openshift"},
+			expectUpdate:   false,
+			expectedResult: reconcile.Result{RequeueAfter: requeueStable},
+		},
+		{
+			name:           "happy path without partner label: placement succeeds, GoogPartnerSolution empty",
+			clusterID:      "cluster-1b",
+			cluster:        buildCluster("cluster-1b", false),
 			selector:       &mockSelector{mcName: "mc-us-c1", baseDomain: "hc-us-central1-abc.example.com"},
 			expectUpdate:   false,
 			expectedResult: reconcile.Result{RequeueAfter: requeueStable},
@@ -262,25 +271,26 @@ func TestRoundRobinSelector(t *testing.T) {
 		sel := NewRoundRobinSelector()
 		ctx := context.Background()
 
-		mc1, domain1, err := sel.Select(ctx, candidates)
+		mc1, domain1, partner1, err := sel.Select(ctx, candidates)
 		require.NoError(t, err)
 		require.Equal(t, "mc-a", mc1)
 		require.Equal(t, "a.example.com", domain1)
+		require.Empty(t, partner1, "RoundRobinSelector always returns empty googPartnerSolution")
 
-		mc2, domain2, err := sel.Select(ctx, candidates)
+		mc2, domain2, _, err := sel.Select(ctx, candidates)
 		require.NoError(t, err)
 		require.Equal(t, "mc-b", mc2)
 		require.Equal(t, "b.example.com", domain2)
 
 		// Wraps around.
-		mc3, _, err := sel.Select(ctx, candidates)
+		mc3, _, _, err := sel.Select(ctx, candidates)
 		require.NoError(t, err)
 		require.Equal(t, "mc-a", mc3)
 	})
 
 	t.Run("returns error when no candidates", func(t *testing.T) {
 		sel := NewRoundRobinSelector()
-		_, _, err := sel.Select(context.Background(), nil)
+		_, _, _, err := sel.Select(context.Background(), nil)
 		require.Error(t, err)
 	})
 
@@ -289,7 +299,7 @@ func TestRoundRobinSelector(t *testing.T) {
 		candidates := []Candidate{
 			{Name: "mc-empty", BaseDomains: []string{}},
 		}
-		_, _, err := sel.Select(context.Background(), candidates)
+		_, _, _, err := sel.Select(context.Background(), candidates)
 		require.Error(t, err)
 	})
 }

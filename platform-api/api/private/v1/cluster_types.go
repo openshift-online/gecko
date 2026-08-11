@@ -169,6 +169,12 @@ type ClusterStatus struct {
 type PlacementResult struct {
 	ManagementClusterName string `json:"managementClusterName,omitempty"`
 	BaseDomain            string `json:"baseDomain,omitempty"`
+	// GoogPartnerSolution is the value of the goog-partner-solution GCP resource label,
+	// read from the meta_common_labels field of the region's argocd-cluster Secret Manager secret.
+	// Consumed by the hc-controller to set spec.platform.gcp.resourceLabels on the HostedCluster CR.
+	// Empty when the label is not present in the secret (e.g. RoundRobinSelector environments).
+	// +orlop:public
+	GoogPartnerSolution string `json:"googPartnerSolution,omitempty"`
 }
 
 // VersionResolutionResult holds the VR controller's output.

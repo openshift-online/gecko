@@ -148,6 +148,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		ReleaseImage:         vr.ReleaseImage,
 		ReleaseChannel:       vr.CincinnatiChannel,
 		BaseDomain:           placement.BaseDomain,
+		GoogPartnerSolution:  placement.GoogPartnerSolution,
 	}
 
 	mw, err := manifest.Build(mwInput)

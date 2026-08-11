@@ -43,6 +43,10 @@ type Input struct {
 	CPOImage                     string // optional — set CPO annotation if non-empty
 	CAPGImage                    string // optional — set CAPG annotation if non-empty
 	Slug                         string // default: "user" (username slug for DNS names)
+	// GoogPartnerSolution is the value of the goog-partner-solution GCP resource label,
+	// sourced from PlacementResult. When non-empty, sets spec.platform.gcp.resourceLabels
+	// on the HostedCluster CR. When empty, resourceLabels is omitted entirely.
+	GoogPartnerSolution string
 }
 
 // Build constructs a *workv1.ManifestWork from the given input.
@@ -263,6 +267,43 @@ func buildCertificate(input Input, clusterNS string) (workv1.Manifest, error) {
 	return toManifest(obj)
 }
 
+// buildGCPPlatform constructs the spec.platform.gcp map for the HostedCluster CR.
+// resourceLabels is only included when input.GoogPartnerSolution is non-empty.
+func buildGCPPlatform(input Input) map[string]any {
+	gcp := map[string]any{
+		"project": input.GCPProjectID,
+		"region":  input.GCPRegion,
+		"networkConfig": map[string]any{
+			"network": map[string]any{
+				"name": input.GCPNetwork,
+			},
+			"privateServiceConnectSubnet": map[string]any{
+				"name": input.GCPSubnet,
+			},
+		},
+		"endpointAccess": input.GCPEndpointAccess,
+		"workloadIdentity": map[string]any{
+			"projectNumber": input.WIFProjectNumber,
+			"poolID":        input.WIFPoolID,
+			"providerID":    input.WIFProviderID,
+			"serviceAccountsEmails": map[string]any{
+				"nodePool":        input.NodePoolEmail,
+				"controlPlane":    input.ControlPlaneEmail,
+				"cloudController": input.CloudControllerEmail,
+				"storage":         input.StorageEmail,
+				"imageRegistry":   input.ImageRegistryEmail,
+				"network":         input.NetworkEmail,
+			},
+		},
+	}
+	if input.GoogPartnerSolution != "" {
+		gcp["resourceLabels"] = []map[string]any{
+			{"key": "goog-partner-solution", "value": input.GoogPartnerSolution},
+		}
+	}
+	return gcp
+}
+
 func buildHostedCluster(input Input, clusterNS string) (workv1.Manifest, error) {
 	genStr := strconv.FormatInt(input.Generation, 10)
 	apiHostname := fmt.Sprintf("api.%s-%s.%s", input.ClusterName, input.Slug, input.BaseDomain)
@@ -320,32 +361,7 @@ func buildHostedCluster(input Input, clusterNS string) (workv1.Manifest, error) 
 			},
 			"platform": map[string]any{
 				"type": "GCP",
-				"gcp": map[string]any{
-					"project": input.GCPProjectID,
-					"region":  input.GCPRegion,
-					"networkConfig": map[string]any{
-						"network": map[string]any{
-							"name": input.GCPNetwork,
-						},
-						"privateServiceConnectSubnet": map[string]any{
-							"name": input.GCPSubnet,
-						},
-					},
-					"endpointAccess": input.GCPEndpointAccess,
-					"workloadIdentity": map[string]any{
-						"projectNumber": input.WIFProjectNumber,
-						"poolID":        input.WIFPoolID,
-						"providerID":    input.WIFProviderID,
-						"serviceAccountsEmails": map[string]any{
-							"nodePool":        input.NodePoolEmail,
-							"controlPlane":    input.ControlPlaneEmail,
-							"cloudController": input.CloudControllerEmail,
-							"storage":         input.StorageEmail,
-							"imageRegistry":   input.ImageRegistryEmail,
-							"network":         input.NetworkEmail,
-						},
-					},
-				},
+				"gcp":  buildGCPPlatform(input),
 			},
 			"services": []any{
 				map[string]any{
