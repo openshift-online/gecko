@@ -1,5 +1,52 @@
 # Cedar-based Authorization for Gecko — Implementation Plan
 
+
+## Service Enablement
+
+1. Go to marketplace
+2. Enable the service for the project
+     |
+   Pub/Sub Event: Customer Principal, Project ID
+     |
+   MarketPlace Handler -> for each region, add "Customer principal" as "Service Admin" in that project
+
+
+```
+MarketPlace Handler POST request: /api/v1/namespaces/<project_id>
+    {
+       RoleBinding:
+        principal: "Customer Principal (asegundo@redhat.com)"
+        role: "ServiceAdmin"
+    }
+```
+## Service Usage
+```
+"Service Admin" POST request: /api/v1/namespaces/<project_id>
+{
+  RoleBinding:
+    principal: "Customer Principal (asegundo@redhat.com)"
+    role: "ClusterAdmin"
+}
+
+
+"Service Admin" POST request: /api/v1/namespaces/<project_id>
+{
+  RoleBinding:
+    principal: "JimD@redhat.com"
+    role: "ClusterViewer"
+}
+
+"Service Admin" POST request: /api/v1/namespaces/<project_id>
+{
+   RoleBinding:
+      principal: "JimD@redhat.com"
+      role: "ClusterAdmin"
+      condition: 'cluster.metadata.label.key == "env" and cluster.metadata.label.value == "stage"'
+}
+```
+
+
+
 ## Background
 
 Gecko's public API (chi.Router, port 8081) currently has **zero authentication or authorization**.
