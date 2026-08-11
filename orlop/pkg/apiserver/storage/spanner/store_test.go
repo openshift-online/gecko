@@ -84,19 +84,29 @@ const (
 )
 
 var (
-	sharedClient    *spanner.Client
-	sharedDBAdmin   *database.DatabaseAdminClient
-	sharedDBPath    string
-	resourcesTable  string
-	countersTable   string
-	testCounterSeq  atomic.Int64
+	sharedClient          *spanner.Client
+	sharedDBAdmin         *database.DatabaseAdminClient
+	sharedDBPath          string
+	resourcesTable        string
+	countersTable         string
+	testCounterSeq        atomic.Int64
+	spannerEmulatorReady  bool
 )
+
+// requireEmulator skips t if the Spanner emulator is not available. Call this
+// at the top of any test that needs a real Spanner connection.
+func requireEmulator(t *testing.T) {
+	t.Helper()
+	if !spannerEmulatorReady {
+		t.Skip("SPANNER_EMULATOR_HOST not set — skipping Spanner integration test")
+	}
+}
 
 func TestMain(m *testing.M) {
 	emulatorHost := os.Getenv("SPANNER_EMULATOR_HOST")
 	if emulatorHost == "" {
-		fmt.Println("SPANNER_EMULATOR_HOST not set, skipping Spanner integration tests")
-		os.Exit(0)
+		fmt.Println("SPANNER_EMULATOR_HOST not set, running unit tests only")
+		os.Exit(m.Run())
 	}
 
 	sharedDBPath = fmt.Sprintf("projects/%s/instances/%s/databases/%s", testProject, testInstance, testDatabase)
@@ -244,6 +254,7 @@ func TestMain(m *testing.M) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
+	spannerEmulatorReady = true
 	code := m.Run()
 
 	sharedClient.Close()
@@ -253,6 +264,7 @@ func TestMain(m *testing.M) {
 
 func setupTestStore(t *testing.T) *SpannerStore {
 	t.Helper()
+	requireEmulator(t)
 
 	// Each test gets a unique counter_id for resource version isolation
 	counterID := fmt.Sprintf("test_%d", testCounterSeq.Add(1))

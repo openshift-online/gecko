@@ -14,6 +14,92 @@ import (
 
 var broadcasterCounterID = "test_broadcaster"
 
+// TestBroadcaster_PartitionManagement verifies the partition bookkeeping logic
+// in handleChildPartitionsRecord without requiring a Spanner connection:
+//
+//   - Each child partition is enqueued exactly once (deduplication via
+//     enqueuedChildren prevents re-enqueuing if the same token appears again).
+//   - For merges, the child is only enqueued once all parent partitions have
+//     reported the same child token (pendingChildren counter).
+func TestBroadcaster_PartitionManagement(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startTs := time.Now()
+
+	b := &spannerBroadcaster{
+		pendingChildren:  make(map[string]int),
+		enqueuedChildren: make(map[string]struct{}),
+		// Large buffer so sends never block in this unit test.
+		partitionQueue: make(chan partitionWork, 128),
+	}
+
+	// Simulate a split: two children each with one parent.
+	cpr := &csChildPartitionsRecord{
+		StartTimestamp: startTs,
+		ChildPartitions: []*csChildPartition{
+			{Token: "child-A", ParentPartitionTokens: []string{"root"}},
+			{Token: "child-B", ParentPartitionTokens: []string{"root"}},
+		},
+	}
+	b.handleChildPartitionsRecord(ctx, cpr)
+
+	if got := len(b.partitionQueue); got != 2 {
+		t.Errorf("expected 2 items in partitionQueue after split, got %d", got)
+	}
+	b.mu.Lock()
+	if _, ok := b.enqueuedChildren["child-A"]; !ok {
+		t.Error("child-A not in enqueuedChildren")
+	}
+	if _, ok := b.enqueuedChildren["child-B"]; !ok {
+		t.Error("child-B not in enqueuedChildren")
+	}
+	b.mu.Unlock()
+
+	// Calling again with the same record must not re-enqueue (deduplication).
+	b.handleChildPartitionsRecord(ctx, cpr)
+	if got := len(b.partitionQueue); got != 2 {
+		t.Errorf("expected still 2 items in partitionQueue after duplicate report, got %d", got)
+	}
+
+	// Drain the queue so we have a clean count for the merge test.
+	for len(b.partitionQueue) > 0 {
+		<-b.partitionQueue
+	}
+
+	// Simulate a merge: one child with two parents. The child must not be
+	// enqueued until both parents have reported it.
+	mergeToken := "merged"
+	cprMerge := &csChildPartitionsRecord{
+		StartTimestamp: startTs,
+		ChildPartitions: []*csChildPartition{
+			{Token: mergeToken, ParentPartitionTokens: []string{"child-A", "child-B"}},
+		},
+	}
+
+	// First parent reports — child not yet ready.
+	b.handleChildPartitionsRecord(ctx, cprMerge)
+	if got := len(b.partitionQueue); got != 0 {
+		t.Errorf("expected 0 items after first parent, got %d", got)
+	}
+
+	// Second parent reports — child is now ready and should be enqueued.
+	b.handleChildPartitionsRecord(ctx, cprMerge)
+	if got := len(b.partitionQueue); got != 1 {
+		t.Errorf("expected 1 item after both parents reported, got %d", got)
+	}
+	b.mu.Lock()
+	if _, ok := b.enqueuedChildren[mergeToken]; !ok {
+		t.Error("merge child not in enqueuedChildren after both parents reported")
+	}
+	b.mu.Unlock()
+
+	work := <-b.partitionQueue
+	if work.token == nil || *work.token != mergeToken {
+		t.Errorf("expected token %q in queue, got %v", mergeToken, work.token)
+	}
+}
+
 func testSchemeAndGVK() (*runtime.Scheme, schema.GroupVersionKind) {
 	scheme := runtime.NewScheme()
 	gv := schema.GroupVersion{Group: "test.example.com", Version: "v1"}
@@ -25,6 +111,7 @@ func testSchemeAndGVK() (*runtime.Scheme, schema.GroupVersionKind) {
 
 func setupBroadcasterWithStore(t *testing.T) (*spannerBroadcaster, *SpannerStore) {
 	t.Helper()
+	requireEmulator(t)
 
 	scheme, gvk := testSchemeAndGVK()
 
@@ -81,7 +168,10 @@ func drainUntil(t *testing.T, ch <-chan storage.ResourceEvent, ns, name string, 
 	}
 }
 
-const eventTimeout = 10 * time.Second
+// eventTimeout is the maximum time to wait for a change-stream event in
+// integration tests. The Spanner emulator can take ~20 seconds to deliver
+// DELETE events through the change stream, so this must exceed that latency.
+const eventTimeout = 30 * time.Second
 
 func TestBroadcaster_SubscribeReceivesLiveEvents(t *testing.T) {
 	_, store := setupBroadcasterWithStore(t)
@@ -214,18 +304,19 @@ func TestBroadcaster_DeleteEvent(t *testing.T) {
 	_, store := setupBroadcasterWithStore(t)
 	ns := uniqueNS("bc-delete")
 
-	obj := newTestObject(withName("to-delete"), withNamespace(ns))
-	if err := store.Create(context.Background(), obj); err != nil {
-		t.Fatalf("Create() failed: %v", err)
-	}
-
+	// Subscribe before writing so the CREATE event is never missed.
 	eventCh, stop, err := store.broadcaster.Subscribe("")
 	if err != nil {
 		t.Fatalf("Subscribe() failed: %v", err)
 	}
 	defer stop()
 
-	// Wait for the CREATE event to arrive before deleting
+	obj := newTestObject(withName("to-delete"), withNamespace(ns))
+	if err := store.Create(context.Background(), obj); err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+
+	// Wait for the CREATE event to arrive before deleting.
 	drainUntil(t, eventCh, ns, "to-delete", eventTimeout)
 
 	if err := store.Delete(context.Background(), ns, "to-delete"); err != nil {
@@ -255,18 +346,19 @@ func TestBroadcaster_UpdateEvent(t *testing.T) {
 	_, store := setupBroadcasterWithStore(t)
 	ns := uniqueNS("bc-update")
 
-	obj := newTestObject(withName("to-update"), withNamespace(ns))
-	if err := store.Create(context.Background(), obj); err != nil {
-		t.Fatalf("Create() failed: %v", err)
-	}
-
+	// Subscribe before writing so the CREATE event is never missed.
 	eventCh, stop, err := store.broadcaster.Subscribe("")
 	if err != nil {
 		t.Fatalf("Subscribe() failed: %v", err)
 	}
 	defer stop()
 
-	// Wait for the CREATE event before updating
+	obj := newTestObject(withName("to-update"), withNamespace(ns))
+	if err := store.Create(context.Background(), obj); err != nil {
+		t.Fatalf("Create() failed: %v", err)
+	}
+
+	// Wait for the CREATE event before updating.
 	drainUntil(t, eventCh, ns, "to-update", eventTimeout)
 
 	obj.Object["spec"] = map[string]any{"updated": true}

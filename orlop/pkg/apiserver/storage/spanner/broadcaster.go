@@ -68,35 +68,58 @@ type csRecord struct {
 	ChildPartitionsRecords []*csChildPartitionsRecord  `spanner:"child_partitions_record"`
 }
 
+// resourceBinding maps a resource type to the scheme/GVK used to
+// reconstruct objects for that resource type from change stream data.
+type resourceBinding struct {
+	scheme *runtime.Scheme
+	gvk    schema.GroupVersionKind
+}
+
+// subscriber is a single watch subscription for a specific resource type.
+type subscriber struct {
+	resourceType string
+	ch           chan storage.ResourceEvent
+}
+
+// partitionWork is a unit of work for the single change-stream reader: one
+// partition to read, identified by its token and the timestamp to start from.
+type partitionWork struct {
+	token   *string   // nil for the initial root partition
+	startTs time.Time
+}
+
 type spannerBroadcaster struct {
 	client           *spanner.Client
-	resourceType     string
 	tableName        string
 	changeStreamName string
 	ctx              context.Context
 	cancel           context.CancelFunc
-	scheme           *runtime.Scheme
-	gvk              schema.GroupVersionKind
 	logger           logr.Logger
 
 	mu          sync.RWMutex
-	subscribers map[int]chan storage.ResourceEvent
+	types       map[string]resourceBinding
+	subscribers map[int]*subscriber
 	nextID      int
 	closed      bool
 	lastRV      int64
 	wg          sync.WaitGroup
 
+	// partitionQueue is consumed by a single runPartitionLoop goroutine.
+	// Keeping partition reads strictly sequential ensures at most one active
+	// change-stream query exists at any time, well within Spanner's 20-reader
+	// limit per stream.
+	partitionQueue chan partitionWork
+
 	// pendingChildren tracks child partition tokens during partition merges.
 	// When multiple parents merge into one child, each parent independently
 	// reports the same child token. The counter tracks how many parents have
-	// yet to finish; the child reader starts only when all parents are done.
+	// yet to finish; the child is enqueued only when all parents are done.
 	pendingChildren map[string]int
 
-	// spawnedChildren records every child token for which a reader goroutine
-	// has already been launched. This prevents duplicate goroutines when a
-	// parent partition re-queries the change stream and receives the same
-	// ChildPartitionsRecord again.
-	spawnedChildren map[string]struct{}
+	// enqueuedChildren records every child token that has been placed in
+	// partitionQueue. This prevents duplicate enqueues if the same
+	// ChildPartitionsRecord arrives more than once (e.g. after a retry).
+	enqueuedChildren map[string]struct{}
 }
 
 type spannerBroadcasterConfig struct {
@@ -128,38 +151,74 @@ func newSpannerBroadcaster(ctx context.Context, config spannerBroadcasterConfig)
 
 	b := &spannerBroadcaster{
 		client:           config.Client,
-		resourceType:     config.ResourceType,
 		tableName:        tableName,
 		changeStreamName: config.ChangeStreamName,
 		ctx:              bCtx,
 		cancel:           cancel,
-		scheme:           config.Scheme,
-		gvk:              config.GVK,
 		logger:           broadcasterLogger,
-		subscribers:     make(map[int]chan storage.ResourceEvent),
-		pendingChildren: make(map[string]int),
-		spawnedChildren: make(map[string]struct{}),
+		types:            make(map[string]resourceBinding),
+		subscribers:      make(map[int]*subscriber),
+		pendingChildren:  make(map[string]int),
+		enqueuedChildren: make(map[string]struct{}),
+		// 128 is far beyond any realistic partition fan-out depth.
+		partitionQueue: make(chan partitionWork, 128),
 	}
 
-	startTs := time.Now()
+	if config.ResourceType != "" {
+		b.RegisterType(config.ResourceType, config.Scheme, config.GVK)
+	}
+
+	// Seed the queue with the root partition and start the single reader loop.
+	b.partitionQueue <- partitionWork{token: nil, startTs: time.Now()}
 	b.wg.Go(func() {
-		b.readChangeStream(bCtx, nil, startTs)
+		b.runPartitionLoop(bCtx)
 	})
 
 	return b, nil
 }
 
-// readChangeStream reads a single change stream partition. Each partition
-// tracks its own checkpoint (lastTs) so that a reconnect resumes from where
-// this partition left off, not from the most-advanced partition's timestamp.
+// RegisterType registers a resource type with the broadcaster. Once
+// registered, the broadcaster reconstructs and broadcasts events for that
+// resource type from the shared change stream watch.
+func (b *spannerBroadcaster) RegisterType(resourceType string, scheme *runtime.Scheme, gvk schema.GroupVersionKind) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.types[resourceType] = resourceBinding{scheme: scheme, gvk: gvk}
+}
+
+// runPartitionLoop is the single goroutine that reads change-stream partitions
+// one at a time. Keeping reads strictly serial ensures at most one active
+// Spanner change-stream query exists, staying well within the 20-reader limit.
 //
-// When a partition yields a ChildPartitionsRecord (split/merge), the children
-// are launched by handleChildPartitionsRecord and this goroutine exits — its
-// slice of the change stream has been handed off.
+// Partition work items are seeded by newSpannerBroadcaster (root partition)
+// and by handleChildPartitionsRecord (child partitions after a split/merge).
+func (b *spannerBroadcaster) runPartitionLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case work, ok := <-b.partitionQueue:
+			if !ok {
+				return
+			}
+			b.readChangeStream(ctx, work.token, work.startTs)
+		}
+	}
+}
+
+// readChangeStream reads one change-stream partition to completion. It loops
+// continuously, re-issuing the query each time the iterator returns Done
+// without children (the emulator and real Spanner may flush a batch and return
+// Done before the partition has been split). When Done is returned after
+// children have been reported (sawChildren == true), the partition has been
+// handed off to its children and this function returns so runPartitionLoop can
+// dequeue and read those children.
+//
+// Transient errors are retried with exponential backoff, resuming from the
+// last successfully processed timestamp so no events are lost.
 func (b *spannerBroadcaster) readChangeStream(ctx context.Context, partitionToken *string, startTs time.Time) {
 	backoff := time.Second
 	lastTs := startTs
-	resource := b.gvk.GroupVersion().String() + "/" + b.gvk.Kind
 
 	for {
 		select {
@@ -171,7 +230,7 @@ func (b *spannerBroadcaster) readChangeStream(ctx context.Context, partitionToke
 		params := map[string]any{
 			"startTimestamp":        lastTs,
 			"endTimestamp":          (*time.Time)(nil),
-			"partitionToken":       partitionToken,
+			"partitionToken":        partitionToken,
 			"heartbeatMilliseconds": int64(5000),
 		}
 
@@ -193,7 +252,6 @@ func (b *spannerBroadcaster) readChangeStream(ctx context.Context, partitionToke
 
 		if err != nil {
 			b.logger.Error(err, "Change stream read error, retrying",
-				"resource", resource,
 				"backoff", backoff)
 			select {
 			case <-ctx.Done():
@@ -206,13 +264,16 @@ func (b *spannerBroadcaster) readChangeStream(ctx context.Context, partitionToke
 			continue
 		}
 
-		// Normal end-of-stream after a ChildPartitionsRecord means this
-		// partition has been split or merged. The child readers have been
-		// started by handleChildPartitionsRecord; this goroutine is done.
+		// The partition ended after reporting a split/merge. Children are
+		// already in partitionQueue; return so runPartitionLoop reads them.
 		if sawChildren {
 			return
 		}
 
+		// Done with no children: re-issue immediately to stay live. The
+		// emulator (and sometimes real Spanner) returns Done in short batches
+		// even for long-lived partitions. Events committed while no query was
+		// active are buffered and will appear in the next query.
 		backoff = time.Second
 	}
 }
@@ -281,7 +342,11 @@ func (b *spannerBroadcaster) handleDataChangeRecord(dcr *csDataChangeRecord) {
 		}
 
 		resourceType, _ := keys["resource_type"].(string)
-		if resourceType != b.resourceType {
+
+		b.mu.RLock()
+		binding, ok := b.types[resourceType]
+		b.mu.RUnlock()
+		if !ok {
 			continue
 		}
 
@@ -315,7 +380,7 @@ func (b *spannerBroadcaster) handleDataChangeRecord(dcr *csDataChangeRecord) {
 			}
 		}
 
-		obj, err := b.reconstructObject(objectDataBytes)
+		obj, err := b.reconstructObject(objectDataBytes, binding)
 		if err != nil {
 			continue
 		}
@@ -329,7 +394,7 @@ func (b *spannerBroadcaster) handleDataChangeRecord(dcr *csDataChangeRecord) {
 			ContextFilterValue: contextFilter,
 		}
 
-		b.broadcastToSubscribers(event)
+		b.broadcastToSubscribers(resourceType, event)
 
 		b.mu.Lock()
 		if rv > b.lastRV {
@@ -370,15 +435,16 @@ func jsonInt64(v any) (int64, bool) {
 }
 
 func (b *spannerBroadcaster) handleChildPartitionsRecord(ctx context.Context, cpr *csChildPartitionsRecord) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	// Collect ready tokens under the lock, then enqueue without holding it.
+	var ready []partitionWork
 
+	b.mu.Lock()
 	for _, cp := range cpr.ChildPartitions {
 		token := cp.Token
 		startTs := cpr.StartTimestamp
 
-		// Skip tokens for which a reader goroutine was already launched.
-		if _, spawned := b.spawnedChildren[token]; spawned {
+		// Skip tokens already queued to prevent duplicate reads.
+		if _, enqueued := b.enqueuedChildren[token]; enqueued {
 			continue
 		}
 
@@ -389,16 +455,25 @@ func (b *spannerBroadcaster) handleChildPartitionsRecord(ctx context.Context, cp
 
 		if b.pendingChildren[token] <= 0 {
 			delete(b.pendingChildren, token)
-			b.spawnedChildren[token] = struct{}{}
-			b.wg.Go(func() {
-				b.readChangeStream(ctx, &token, startTs)
-			})
+			b.enqueuedChildren[token] = struct{}{}
+			ready = append(ready, partitionWork{token: &token, startTs: startTs})
+		}
+	}
+	b.mu.Unlock()
+
+	// Enqueue into the partition queue. The single runPartitionLoop goroutine
+	// will read each child after the current partition's reader returns.
+	for _, work := range ready {
+		select {
+		case b.partitionQueue <- work:
+		case <-ctx.Done():
+			return
 		}
 	}
 }
 
-func (b *spannerBroadcaster) reconstructObject(data []byte) (client.Object, error) {
-	if b.scheme == nil || b.gvk.Empty() {
+func (b *spannerBroadcaster) reconstructObject(data []byte, binding resourceBinding) (client.Object, error) {
+	if binding.scheme == nil || binding.gvk.Empty() {
 		obj := &unstructured.Unstructured{}
 		if err := json.Unmarshal(data, &obj.Object); err != nil {
 			return nil, err
@@ -406,13 +481,13 @@ func (b *spannerBroadcaster) reconstructObject(data []byte) (client.Object, erro
 		return obj, nil
 	}
 
-	obj, err := b.scheme.New(b.gvk)
+	obj, err := binding.scheme.New(binding.gvk)
 	if err != nil {
 		unstruct := &unstructured.Unstructured{}
 		if err := json.Unmarshal(data, &unstruct.Object); err != nil {
 			return nil, err
 		}
-		unstruct.SetGroupVersionKind(b.gvk)
+		unstruct.SetGroupVersionKind(binding.gvk)
 		return unstruct, nil
 	}
 
@@ -420,7 +495,7 @@ func (b *spannerBroadcaster) reconstructObject(data []byte) (client.Object, erro
 		return nil, fmt.Errorf("failed to unmarshal into typed object: %w", err)
 	}
 
-	obj.GetObjectKind().SetGroupVersionKind(b.gvk)
+	obj.GetObjectKind().SetGroupVersionKind(binding.gvk)
 
 	clientObj, ok := obj.(client.Object)
 	if !ok {
@@ -430,16 +505,19 @@ func (b *spannerBroadcaster) reconstructObject(data []byte) (client.Object, erro
 	return clientObj, nil
 }
 
-func (b *spannerBroadcaster) broadcastToSubscribers(event storage.ResourceEvent) {
+func (b *spannerBroadcaster) broadcastToSubscribers(resourceType string, event storage.ResourceEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	for id, ch := range b.subscribers {
+	for id, sub := range b.subscribers {
+		if sub.resourceType != resourceType {
+			continue
+		}
 		select {
-		case ch <- event:
+		case sub.ch <- event:
 		default:
 			// Channel full — cancel this watch so the controller knows to relist
-			close(ch)
+			close(sub.ch)
 			delete(b.subscribers, id)
 		}
 	}
@@ -449,10 +527,32 @@ func (b *spannerBroadcaster) Broadcast(event storage.ResourceEvent) {
 }
 
 func (b *spannerBroadcaster) Subscribe(sinceResourceVersion string) (<-chan storage.ResourceEvent, func(), error) {
+	b.mu.RLock()
+	var resourceType string
+	for rt := range b.types {
+		resourceType = rt
+		break
+	}
+	b.mu.RUnlock()
+	if resourceType == "" {
+		return nil, nil, fmt.Errorf("no resource types registered")
+	}
+	return b.subscribeFor(resourceType, sinceResourceVersion)
+}
+
+// subscribeFor creates a watch for a specific resource type on the shared
+// change stream watch.
+func (b *spannerBroadcaster) subscribeFor(resourceType, sinceResourceVersion string) (<-chan storage.ResourceEvent, func(), error) {
 	b.mu.Lock()
 	if b.closed {
 		b.mu.Unlock()
 		return nil, nil, fmt.Errorf("broadcaster is closed")
+	}
+
+	binding, ok := b.types[resourceType]
+	if !ok {
+		b.mu.Unlock()
+		return nil, nil, fmt.Errorf("resource type not registered: %s", resourceType)
 	}
 
 	id := b.nextID
@@ -460,7 +560,7 @@ func (b *spannerBroadcaster) Subscribe(sinceResourceVersion string) (<-chan stor
 
 	// Internal channel receives live events immediately
 	liveCh := make(chan storage.ResourceEvent, 100)
-	b.subscribers[id] = liveCh
+	b.subscribers[id] = &subscriber{resourceType: resourceType, ch: liveCh}
 	b.mu.Unlock()
 
 	// Output channel returned to caller — events arrive in order
@@ -472,7 +572,7 @@ func (b *spannerBroadcaster) Subscribe(sinceResourceVersion string) (<-chan stor
 		var lastReplayedRV int64
 		if sinceResourceVersion != "" {
 			var ok bool
-			lastReplayedRV, ok = b.sendHistoricalEvents(outCh, sinceResourceVersion)
+			lastReplayedRV, ok = b.sendHistoricalEvents(outCh, resourceType, binding, sinceResourceVersion)
 			if !ok {
 				b.unsubscribe(id)
 				return
@@ -505,7 +605,7 @@ func (b *spannerBroadcaster) Subscribe(sinceResourceVersion string) (<-chan stor
 // sendHistoricalEvents replays events since the given RV. Returns the last
 // replayed RV (for deduplication against live events) and false if the output
 // channel is full (watch should be cancelled).
-func (b *spannerBroadcaster) sendHistoricalEvents(outCh chan storage.ResourceEvent, sinceResourceVersion string) (int64, bool) {
+func (b *spannerBroadcaster) sendHistoricalEvents(outCh chan storage.ResourceEvent, resourceType string, binding resourceBinding, sinceResourceVersion string) (int64, bool) {
 	rv, err := strconv.ParseInt(sinceResourceVersion, 10, 64)
 	if err != nil {
 		return 0, true
@@ -517,7 +617,7 @@ func (b *spannerBroadcaster) sendHistoricalEvents(outCh chan storage.ResourceEve
 			b.tableName,
 		),
 		Params: map[string]any{
-			"resourceType": b.resourceType,
+			"resourceType": resourceType,
 			"sinceRV":      rv,
 		},
 	}
@@ -547,7 +647,7 @@ func (b *spannerBroadcaster) sendHistoricalEvents(outCh chan storage.ResourceEve
 			continue
 		}
 
-		obj, err := b.reconstructObject(objectDataBytes)
+		obj, err := b.reconstructObject(objectDataBytes, binding)
 		if err != nil {
 			continue
 		}
@@ -575,8 +675,8 @@ func (b *spannerBroadcaster) unsubscribe(id int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if ch, exists := b.subscribers[id]; exists {
-		close(ch)
+	if sub, exists := b.subscribers[id]; exists {
+		close(sub.ch)
 		delete(b.subscribers, id)
 	}
 }
@@ -591,8 +691,8 @@ func (b *spannerBroadcaster) Close() error {
 	b.closed = true
 	b.cancel()
 
-	for id, ch := range b.subscribers {
-		close(ch)
+	for id, sub := range b.subscribers {
+		close(sub.ch)
 		delete(b.subscribers, id)
 	}
 	b.mu.Unlock()
