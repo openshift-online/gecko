@@ -20,9 +20,9 @@ metadata:
 spec:
   mapRef:
     external: {{ .Values.gateway.certificate.certificateMap.name }}
-  hostname: {{ $hostname }}
+  hostname: {{ $hostname | quote }}
   certificatesRefs:
-    - external: projects/{{ $projectId }}/locations/global/certificates/{{ .Values.gateway.certificate.name }}
+    - external: {{ printf "projects/%s/locations/global/certificates/%s" $projectId .Values.gateway.certificate.name | quote }}
   projectRef:
-    external: {{ $projectId }}
+    external: {{ $projectId | quote }}
 {{- end }}

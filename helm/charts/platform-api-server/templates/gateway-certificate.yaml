@@ -12,7 +12,7 @@ spec:
   location: global
   managed:
     domains:
-      - {{ required "gateway.hostname must be set when gateway is enabled" .Values.gateway.hostname }}
+      - {{ required "gateway.hostname must be set when gateway is enabled" .Values.gateway.hostname | quote }}
   projectRef:
-    external: {{ required "gateway.projectId must be set when gateway is enabled" .Values.gateway.projectId }}
+    external: {{ required "gateway.projectId must be set when gateway is enabled" .Values.gateway.projectId | quote }}
 {{- end }}

@@ -10,14 +10,14 @@ metadata:
     {{- include "platform-api-server.labels" . | nindent 4 }}
     app.kubernetes.io/component: gateway-route
   annotations:
-    external-dns.alpha.kubernetes.io/hostname: {{ $hostname }}
+    external-dns.alpha.kubernetes.io/hostname: {{ $hostname | quote }}
 spec:
   parentRefs:
     - name: {{ .Values.gateway.name }}
       namespace: {{ .Values.gateway.namespace }}
       sectionName: https
   hostnames:
-    - {{ $hostname }}
+    - {{ $hostname | quote }}
   rules:
     - matches:
         - path:
