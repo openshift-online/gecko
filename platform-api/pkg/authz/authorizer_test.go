@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	publicv1 "github.com/openshift-online/gecko/platform-api/api/public/v1"
+	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/memory"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,7 +45,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	t.Helper()
 
 	scheme := runtime.NewScheme()
-	if err := publicv1.AddToScheme(scheme); err != nil {
+	if err := privatev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("failed to add publicv1 to scheme: %v", err)
 	}
 
@@ -80,9 +80,9 @@ func newTestHarness(t *testing.T) *testHarness {
 // createRoleBinding is a helper to create a RoleBinding in the in-memory store.
 func (h *testHarness) createRoleBinding(t *testing.T, name, namespace, subject, roleRef string) {
 	t.Helper()
-	rb := &publicv1.RoleBinding{
+	rb := &privatev1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       publicv1.RoleBindingSpec{Subject: subject, RoleRef: roleRef},
+		Spec:       privatev1.RoleBindingSpec{Subject: subject, RoleRef: roleRef},
 	}
 	if err := h.rbStore.Create(context.Background(), rb); err != nil {
 		t.Fatalf("failed to create RoleBinding %s/%s: %v", namespace, name, err)
@@ -92,9 +92,9 @@ func (h *testHarness) createRoleBinding(t *testing.T, name, namespace, subject, 
 // createPlatformRoleBinding is a helper to create a PlatformRoleBinding in the store.
 func (h *testHarness) createPlatformRoleBinding(t *testing.T, name, subject, roleRef string) {
 	t.Helper()
-	prb := &publicv1.PlatformRoleBinding{
+	prb := &privatev1.PlatformRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       publicv1.PlatformRoleBindingSpec{Subject: subject, RoleRef: roleRef},
+		Spec:       privatev1.PlatformRoleBindingSpec{Subject: subject, RoleRef: roleRef},
 	}
 	if err := h.prbStore.Create(context.Background(), prb); err != nil {
 		t.Fatalf("failed to create PlatformRoleBinding %s: %v", name, err)

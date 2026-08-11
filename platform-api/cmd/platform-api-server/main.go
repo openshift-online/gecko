@@ -138,41 +138,35 @@ func main() {
 	}
 
 	// Load authz configuration (roles and bootstrap bindings) from ConfigMap.
-	// This is loaded before server creation so policies are ready when the
-	// middleware starts processing requests.
+	// This is always loaded (even with --disable-auth) so that roleRef
+	// validation works and bootstrap bindings are created.
 	var roleConfig *authz.RoleConfig
 	var authorizer *authz.Authorizer
-	if !disableAuth {
-		var err error
-		roleConfig, err = authz.LoadConfig(authzConfigDir)
-		if err != nil {
-			log.Printf("Warning: failed to load authz config from %s: %v (authorization will deny all requests)", authzConfigDir, err)
-			// Create a minimal config with no roles — all requests will be denied
-			roleConfig = &authz.RoleConfig{
-				RoleLabels:          make(map[string]bool),
-				NamespaceRoleLabels: make(map[string]bool),
-				PlatformRoleLabels:  make(map[string]bool),
-			}
-		} else {
-			log.Printf("Loaded %d roles from authz config", len(roleConfig.Roles))
-			// Set the global role ref validator so RoleBinding/PlatformRoleBinding
-			// types can validate roleRef against known roles.
-			authz.SetRoleValidator(roleConfig)
-			privatev1.RoleRefValidator = func(roleRef, scope string) error {
-				if scope == "namespace" {
-					return authz.ValidateNamespaceRoleRef(roleRef)
-				}
-				return authz.ValidatePlatformRoleRef(roleRef)
-			}
-		}
 
-		// Generate Cedar policies from role definitions
+	roleConfig, err := authz.LoadConfig(authzConfigDir)
+	if err != nil {
+		log.Printf("Warning: failed to load authz config from %s: %v", authzConfigDir, err)
+		roleConfig = nil
+	} else {
+		log.Printf("Loaded %d roles from authz config", len(roleConfig.Roles))
+		// Set the global role ref validator so RoleBinding/PlatformRoleBinding
+		// types can validate roleRef against known roles.
+		authz.SetRoleValidator(roleConfig)
+		privatev1.RoleRefValidator = func(roleRef, scope string) error {
+			if scope == "namespace" {
+				return authz.ValidateNamespaceRoleRef(roleRef)
+			}
+			return authz.ValidatePlatformRoleRef(roleRef)
+		}
+	}
+
+	// When auth is enabled, generate Cedar policies and create the authorizer.
+	if !disableAuth && roleConfig != nil {
 		policies, err := authz.GeneratePolicies(roleConfig.Roles)
 		if err != nil {
 			log.Fatalf("Failed to generate Cedar policies: %v", err)
 		}
 
-		// Create entity getter and authorizer (stores will be set after server creation)
 		cache := authz.NewEntityCache()
 		entityGetter := authz.NewEntityGetter(nil, nil, cache)
 		authorizer = authz.NewAuthorizer(policies, entityGetter)
@@ -184,7 +178,9 @@ func main() {
 	var publicMiddleware []func(http.Handler) http.Handler
 	if !disableAuth {
 		publicMiddleware = append(publicMiddleware, authn.Middleware)
-		publicMiddleware = append(publicMiddleware, authz.NewMiddleware(authorizer))
+		if authorizer != nil {
+			publicMiddleware = append(publicMiddleware, authz.NewMiddleware(authorizer))
+		}
 	} else {
 		publicMiddleware = append(publicMiddleware, authn.DevModeMiddleware(""))
 		log.Println("Public API auth disabled: using dev mode identity")
@@ -220,24 +216,22 @@ func main() {
 		log.Fatalf("Failed to create server: %v", err)
 	}
 
-	// Wire authz stores now that the server is created and stores are available.
-	if !disableAuth && server.PublicRegistry() != nil {
+	// Wire authz stores and run bootstrap now that the server is created.
+	if server.PublicRegistry() != nil {
 		rbStore := server.PublicRegistry().GetStore(runtimeschema.GroupKind{
 			Group: "gcp.managed.openshift.io", Kind: "RoleBinding"})
 		prbStore := server.PublicRegistry().GetStore(runtimeschema.GroupKind{
 			Group: "gcp.managed.openshift.io", Kind: "PlatformRoleBinding"})
 
-		if rbStore != nil && prbStore != nil {
-			// Update the entity getter with the actual stores
+		// Wire authorizer stores (only when auth is enabled)
+		if !disableAuth && authorizer != nil && rbStore != nil && prbStore != nil {
 			cache := authz.NewEntityCache()
 			entityGetter := authz.NewEntityGetter(rbStore, prbStore, cache)
 			authorizer.SetEntityGetter(entityGetter)
 			log.Println("Authorization stores wired successfully")
-		} else {
-			log.Println("Warning: could not retrieve authz stores from registry")
 		}
 
-		// Run bootstrap: upsert initial PlatformRoleBindings from config
+		// Run bootstrap (always — creates initial PlatformRoleBindings)
 		if roleConfig != nil && len(roleConfig.BootstrapBindings) > 0 && prbStore != nil {
 			if err := authz.RunBootstrap(context.Background(), prbStore, roleConfig.BootstrapBindings); err != nil {
 				log.Printf("Warning: bootstrap failed: %v", err)

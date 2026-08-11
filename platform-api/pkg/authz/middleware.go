@@ -2,6 +2,7 @@ package authz
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,12 @@ import (
 func NewMiddleware(authorizer *Authorizer) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip authz for health/readiness probes
+			if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			email := authn.UserFromContext(r.Context())
 			if email == "" {
 				writeAuthzError(w, http.StatusUnauthorized, "Unauthenticated")
@@ -25,6 +32,14 @@ func NewMiddleware(authorizer *Authorizer) func(http.Handler) http.Handler {
 
 			// Derive Cedar action and resource from the request
 			action, resourceType, resourceID, isCrossNsList := deriveActionAndResource(r)
+			// Log authorization decisions for debugging
+			rctx := chi.RouteContext(r.Context())
+			routePattern := ""
+			if rctx != nil {
+				routePattern = rctx.RoutePattern()
+			}
+			log.Printf("authz: email=%s method=%s path=%s routePattern=%q action=%s resourceType=%s resourceID=%s crossNS=%v",
+				email, r.Method, r.URL.Path, routePattern, action, resourceType, resourceID, isCrossNsList)
 			if action == "" {
 				// Could not determine action — allow the request through
 				// (e.g., health checks, discovery endpoints)
@@ -70,7 +85,13 @@ type ActionMapping struct {
 }
 
 // deriveActionAndResource extracts the Cedar action name and resource identity
-// from the HTTP request using chi's route context.
+// from the HTTP request by parsing the URL path.
+//
+// URL patterns:
+//   /apis/{group}/{version}/namespaces/{ns}/{plural}           -> List (namespaced)
+//   /apis/{group}/{version}/namespaces/{ns}/{plural}/{name}    -> Get/Update/Delete
+//   /apis/{group}/{version}/{plural}                           -> List (cross-ns or cluster-scoped)
+//   /apis/{group}/{version}/{plural}/{name}                    -> Get/Update/Delete (cluster-scoped)
 //
 // Returns:
 //   - action: Cedar action name (e.g., "ListClusters")
@@ -78,36 +99,71 @@ type ActionMapping struct {
 //   - resourceID: Cedar entity ID (e.g., "ns" or "ns/name")
 //   - isCrossNsList: true if this is a cross-namespace list
 func deriveActionAndResource(r *http.Request) (action, resourceType, resourceID string, isCrossNsList bool) {
-	rctx := chi.RouteContext(r.Context())
-	if rctx == nil {
-		return "", "", "", false
-	}
-
-	routePattern := rctx.RoutePattern()
-	if routePattern == "" {
-		return "", "", "", false
-	}
-
-	// Extract URL parameters
-	namespace := chi.URLParam(r, "namespace")
-	name := chi.URLParam(r, "name")
+	path := r.URL.Path
 	method := r.Method
 
-	// Determine which resource kind this route operates on
-	resourceKind := identifyResourceKind(routePattern)
+	// Only handle API paths
+	if !strings.HasPrefix(path, "/apis/") {
+		return "", "", "", false
+	}
+
+	// Strip /apis/{group}/{version}/ prefix
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	// parts[0]="apis", parts[1]=group, parts[2]=version, parts[3+]=resource path
+	if len(parts) < 4 {
+		return "", "", "", false
+	}
+	resourcePath := parts[3:] // everything after /apis/group/version/
+
+	var namespace, plural, name string
+	isStatusUpdate := false
+
+	if len(resourcePath) >= 1 && resourcePath[0] == "namespaces" {
+		// Namespaced: /namespaces/{ns}/{plural}[/{name}[/status]]
+		if len(resourcePath) < 3 {
+			return "", "", "", false
+		}
+		namespace = resourcePath[1]
+		plural = resourcePath[2]
+		if len(resourcePath) >= 4 {
+			name = resourcePath[3]
+		}
+		if len(resourcePath) >= 5 && resourcePath[4] == "status" {
+			isStatusUpdate = true
+		}
+		// Handle parent routes: /namespaces/{ns}/{parentPlural}/{parentID}/{childPlural}[/{name}]
+		if len(resourcePath) >= 5 && resourcePath[4] != "status" {
+			plural = resourcePath[4]
+			name = ""
+			if len(resourcePath) >= 6 {
+				name = resourcePath[5]
+			}
+		}
+	} else {
+		// Cluster-scoped or cross-namespace list: /{plural}[/{name}[/status]]
+		plural = resourcePath[0]
+		if len(resourcePath) >= 2 {
+			name = resourcePath[1]
+		}
+		if len(resourcePath) >= 3 && resourcePath[2] == "status" {
+			isStatusUpdate = true
+		}
+	}
+
+	resourceKind := pluralToKind(plural)
 	if resourceKind == "" {
 		return "", "", "", false
 	}
 
-	// Determine if this is a cross-namespace list
 	isNamespacedResource := isNamespacedKind(resourceKind)
+
+	// Cross-namespace list detection
 	if isNamespacedResource && namespace == "" && method == "GET" {
-		// Cross-namespace list: GET /apis/.../clusters (no namespace)
 		action = listAction(resourceKind)
 		return action, "", "", true
 	}
 
-	// Derive the Cedar action from HTTP method and route shape
+	// Derive Cedar action
 	switch method {
 	case "GET":
 		if name == "" {
@@ -118,8 +174,8 @@ func deriveActionAndResource(r *http.Request) (action, resourceType, resourceID 
 	case "POST":
 		action = createAction(resourceKind)
 	case "PUT", "PATCH":
-		if strings.HasSuffix(routePattern, "/status") {
-			action = "Update" + resourceKind // status update uses same perm as update
+		if isStatusUpdate {
+			action = updateAction(resourceKind)
 		} else {
 			action = updateAction(resourceKind)
 		}
@@ -129,7 +185,7 @@ func deriveActionAndResource(r *http.Request) (action, resourceType, resourceID 
 		return "", "", "", false
 	}
 
-	// Derive the Cedar resource
+	// Derive Cedar resource
 	if isNamespacedResource {
 		if name != "" {
 			resourceType = entityTypeForKind(resourceKind)
@@ -139,7 +195,6 @@ func deriveActionAndResource(r *http.Request) (action, resourceType, resourceID 
 			resourceID = namespace
 		}
 	} else {
-		// Cluster-scoped (e.g., PlatformRoleBinding)
 		if name != "" {
 			resourceType = entityTypeForKind(resourceKind)
 			resourceID = name
@@ -150,27 +205,6 @@ func deriveActionAndResource(r *http.Request) (action, resourceType, resourceID 
 	}
 
 	return action, resourceType, resourceID, false
-}
-
-// identifyResourceKind determines the resource kind from the route pattern.
-func identifyResourceKind(pattern string) string {
-	// Route patterns look like:
-	//   /apis/{group}/{version}/namespaces/{namespace}/clusters/{name}
-	//   /apis/{group}/{version}/platformrolebindings/{name}
-	//   /apis/{group}/{version}/clusters  (cross-namespace list)
-	parts := strings.Split(pattern, "/")
-	for i := len(parts) - 1; i >= 0; i-- {
-		p := parts[i]
-		if p == "" || p == "{name}" || p == "{namespace}" || p == "namespaces" || p == "status" {
-			continue
-		}
-		if strings.HasPrefix(p, "{") {
-			continue
-		}
-		// This should be the plural resource name
-		return pluralToKind(p)
-	}
-	return ""
 }
 
 // pluralToKind maps plural resource names to their Cedar kind names.

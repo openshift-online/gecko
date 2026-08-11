@@ -40,6 +40,9 @@ func setupRouter(registry *ResourceRegistry, corsOrigins []string, customMiddlew
 		AllowedOrigins: corsOrigins,
 	}))
 
+	// Health endpoints registered before custom middleware so they remain
+	// accessible without credentials. When no custom middleware is used,
+	// they are simply registered on the main router.
 	registerHealthEndpoints(r, nil)
 
 	for _, mw := range customMiddleware {
@@ -168,11 +171,15 @@ func setupConvertingRouter(publicRegistry *ResourceRegistry, privateRegistry *Re
 		AllowedOrigins: corsOrigins,
 	}))
 
-	registerHealthEndpoints(r, check)
-
+	// Custom middleware (authn, authz) applies to all routes.
+	// Health endpoints are handled correctly because the authn middleware
+	// must be written to skip paths like /healthz, or health probes
+	// provide the required header.
 	for _, mw := range customMiddleware {
 		r.Use(mw)
 	}
+
+	registerHealthEndpoints(r, check)
 
 	// Create discovery handler using public registry (for public API types)
 	discoveryHandler := handlers.NewDiscoveryHandler(publicRegistry)

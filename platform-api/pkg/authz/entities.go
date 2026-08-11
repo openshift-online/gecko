@@ -6,7 +6,7 @@ import (
 
 	cedar "github.com/cedar-policy/cedar-go"
 	cedartypes "github.com/cedar-policy/cedar-go/types"
-	publicv1 "github.com/openshift-online/gecko/platform-api/api/public/v1"
+	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -77,7 +77,7 @@ func (g *EntityGetter) BuildEntityMap(ctx context.Context, email string) (cedart
 		}
 		items := extractItems(rbList)
 		for _, item := range items {
-			rb, ok := item.(*publicv1.RoleBinding)
+			rb, ok := item.(*privatev1.RoleBinding)
 			if !ok {
 				continue
 			}
@@ -121,7 +121,7 @@ func (g *EntityGetter) BuildEntityMap(ctx context.Context, email string) (cedart
 		}
 		items := extractItems(prbList)
 		for _, item := range items {
-			prb, ok := item.(*publicv1.PlatformRoleBinding)
+			prb, ok := item.(*privatev1.PlatformRoleBinding)
 			if !ok {
 				continue
 			}
@@ -183,13 +183,13 @@ func PlatformEntityUID() cedartypes.EntityUID {
 // extractItems extracts individual items from a list object.
 func extractItems(list client.ObjectList) []client.Object {
 	switch l := list.(type) {
-	case *publicv1.RoleBindingList:
+	case *privatev1.RoleBindingList:
 		result := make([]client.Object, len(l.Items))
 		for i := range l.Items {
 			result[i] = &l.Items[i]
 		}
 		return result
-	case *publicv1.PlatformRoleBindingList:
+	case *privatev1.PlatformRoleBindingList:
 		result := make([]client.Object, len(l.Items))
 		for i := range l.Items {
 			result[i] = &l.Items[i]

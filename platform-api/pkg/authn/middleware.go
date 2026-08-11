@@ -46,8 +46,17 @@ type jwtClaims struct {
 // Middleware returns HTTP middleware that extracts user identity from the
 // X-Endpoint-API-UserInfo header. If the header is missing or malformed,
 // it returns 401 Unauthenticated.
+//
+// Health and readiness endpoints (/healthz, /readyz) are exempt from
+// authentication and pass through without the header.
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip auth for health/readiness probes
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		headerValue := r.Header.Get(UserInfoHeader)
 		if headerValue == "" {
 			writeError(w, http.StatusUnauthorized, "Unauthenticated: missing "+UserInfoHeader+" header")

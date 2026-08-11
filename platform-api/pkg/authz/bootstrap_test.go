@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	publicv1 "github.com/openshift-online/gecko/platform-api/api/public/v1"
+	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/memory"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -14,7 +14,7 @@ import (
 func newPRBStore(t *testing.T) *memory.MemoryStore {
 	t.Helper()
 	scheme := runtime.NewScheme()
-	if err := publicv1.AddToScheme(scheme); err != nil {
+	if err := privatev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("AddToScheme: %v", err)
 	}
 	return memory.NewMemoryStore("platformrolebindings", scheme, runtimeschema.GroupVersionKind{
@@ -22,13 +22,13 @@ func newPRBStore(t *testing.T) *memory.MemoryStore {
 	})
 }
 
-func listPRBs(t *testing.T, store *memory.MemoryStore) []publicv1.PlatformRoleBinding {
+func listPRBs(t *testing.T, store *memory.MemoryStore) []privatev1.PlatformRoleBinding {
 	t.Helper()
 	list, err := store.List(context.Background(), storage.ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	prbList, ok := list.(*publicv1.PlatformRoleBindingList)
+	prbList, ok := list.(*privatev1.PlatformRoleBindingList)
 	if !ok {
 		t.Fatalf("expected *PlatformRoleBindingList, got %T", list)
 	}
@@ -52,7 +52,7 @@ func TestRunBootstrap_CreatesBindings(t *testing.T) {
 	}
 
 	// Build a map for easier lookup.
-	byName := make(map[string]publicv1.PlatformRoleBinding, len(items))
+	byName := make(map[string]privatev1.PlatformRoleBinding, len(items))
 	for _, item := range items {
 		byName[item.Name] = item
 	}
