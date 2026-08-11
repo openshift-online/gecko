@@ -168,13 +168,90 @@ func newSpannerBroadcaster(ctx context.Context, config spannerBroadcasterConfig)
 		b.RegisterType(config.ResourceType, config.Scheme, config.GVK)
 	}
 
-	// Seed the queue with the root partition and start the single reader loop.
-	b.partitionQueue <- partitionWork{token: nil, startTs: time.Now()}
+	// Phase 1: discover initial partitions by querying the root (nil-token)
+	// partition synchronously. This fails fast if the change stream is not
+	// available (e.g. missing DDL) instead of silently retrying in the
+	// background.
+	startTs := time.Now()
+	partitions, err := b.discoverPartitions(bCtx, startTs)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to discover change stream partitions: %w", err)
+	}
+
+	// Phase 2: enqueue the discovered partitions and start the reader loop.
+	for _, p := range partitions {
+		b.partitionQueue <- p
+	}
 	b.wg.Go(func() {
 		b.runPartitionLoop(bCtx)
 	})
 
 	return b, nil
+}
+
+// discoverPartitions queries the root (nil-token) partition of the change
+// stream to obtain the initial set of child partition tokens. This is a
+// synchronous setup step that separates partition discovery from the steady-
+// state read loop, following the approach used by spanner-etcd.
+//
+// If the change stream returns no child partitions (e.g. it has not been split
+// yet), a single root partition work item is returned so the reader loop reads
+// the stream directly from the nil token.
+func (b *spannerBroadcaster) discoverPartitions(ctx context.Context, startTs time.Time) ([]partitionWork, error) {
+	stmt := spanner.Statement{
+		SQL: fmt.Sprintf(
+			"SELECT ChangeRecord FROM READ_%s(start_timestamp => @startTimestamp, end_timestamp => @endTimestamp, partition_token => @partitionToken, heartbeat_milliseconds => @heartbeatMilliseconds)",
+			b.changeStreamName,
+		),
+		Params: map[string]any{
+			"startTimestamp":         startTs,
+			"endTimestamp":           (*time.Time)(nil),
+			"partitionToken":         (*string)(nil),
+			"heartbeatMilliseconds":  int64(1000),
+		},
+	}
+
+	iter := b.client.Single().Query(ctx, stmt)
+	defer iter.Stop()
+
+	var partitions []partitionWork
+	for {
+		row, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("root partition query: %w", err)
+		}
+
+		var records []*csRecord
+		if err := row.Column(0, &records); err != nil {
+			continue
+		}
+
+		for _, rec := range records {
+			for _, cpr := range rec.ChildPartitionsRecords {
+				for _, cp := range cpr.ChildPartitions {
+					token := cp.Token
+					partitions = append(partitions, partitionWork{
+						token:   &token,
+						startTs: cpr.StartTimestamp,
+					})
+				}
+			}
+		}
+	}
+
+	// If the stream has not been split yet, read from the root partition
+	// directly. This is the common case on production Spanner when the
+	// table has few splits.
+	if len(partitions) == 0 {
+		partitions = append(partitions, partitionWork{token: nil, startTs: startTs})
+	}
+
+	b.logger.Info("discovered change stream partitions", "count", len(partitions))
+	return partitions, nil
 }
 
 // RegisterType registers a resource type with the broadcaster. Once
