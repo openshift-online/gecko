@@ -1,11 +1,15 @@
 package placement
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
+	secretmanagerpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"github.com/spf13/cobra"
+	"google.golang.org/api/iterator"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
@@ -19,6 +23,65 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// readGoogPartnerSolution reads goog-partner-solution from the argocd-cluster
+// Secret Manager secret. Returns "" if smProject is empty or the label is absent.
+func readGoogPartnerSolution(ctx context.Context, smClient *secretmanager.Client, smProject string) string {
+	if smProject == "" {
+		return ""
+	}
+
+	// List argocd-cluster secrets filtered by infra-type:region label.
+	it := smClient.ListSecrets(ctx, &secretmanagerpb.ListSecretsRequest{
+		Parent: fmt.Sprintf("projects/%s", smProject),
+		Filter: `labels.infra-type:region name:argocd-cluster`,
+	})
+
+	var secretName string
+	for {
+		secret, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return ""
+		}
+		secretName = secret.Name
+		break
+	}
+
+	if secretName == "" {
+		return ""
+	}
+
+	// Access the latest version of the secret.
+	result, err := smClient.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
+		Name: secretName + "/versions/latest",
+	})
+	if err != nil {
+		return ""
+	}
+
+	// Unmarshal the payload to extract meta_common_labels.
+	var payload struct {
+		MetaCommonLabels string `json:"meta_common_labels"`
+	}
+	if err := json.Unmarshal(result.Payload.Data, &payload); err != nil {
+		return ""
+	}
+
+	// Parse meta_common_labels (JSON-encoded string) and extract goog-partner-solution.
+	if payload.MetaCommonLabels == "" {
+		return ""
+	}
+
+	var commonLabels map[string]string
+	if err := json.Unmarshal([]byte(payload.MetaCommonLabels), &commonLabels); err != nil {
+		return ""
+	}
+
+	return commonLabels["goog-partner-solution"]
 }
 
 // NewCommand returns the placement subcommand.
@@ -46,6 +109,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 
 			var selector placement.Selector
 			var candidates []placement.Candidate
+			var googPartnerSolution string
 
 			if smProject != "" {
 				smClient, err := secretmanager.NewClient(ctx)
@@ -54,6 +118,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				}
 				defer smClient.Close() //nolint:errcheck
 				selector = placement.NewDynamicSelector(smClient, smProject, maestroHTTPAddr)
+				googPartnerSolution = readGoogPartnerSolution(ctx, smClient, smProject)
 			} else {
 				candidates = make([]placement.Candidate, 0, len(candidateNames))
 				for i, name := range candidateNames {
@@ -72,7 +137,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				return fmt.Errorf("create manager: %w", err)
 			}
 
-			rec := placement.NewReconciler(selector, candidates, log, mgr.GetClient())
+			rec := placement.NewReconciler(selector, candidates, log, mgr.GetClient(), googPartnerSolution)
 
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&privatev1.Cluster{}).

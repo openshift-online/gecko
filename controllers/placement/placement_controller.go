@@ -23,19 +23,21 @@ const (
 
 // Reconciler implements the placement controller reconcile loop.
 type Reconciler struct {
-	client     client.Client
-	selector   Selector
-	candidates []Candidate
-	log        logger.Logger
+	client              client.Client
+	selector            Selector
+	candidates          []Candidate
+	log                 logger.Logger
+	googPartnerSolution string
 }
 
 // NewReconciler creates a new placement Reconciler.
-func NewReconciler(selector Selector, candidates []Candidate, log logger.Logger, c client.Client) *Reconciler {
+func NewReconciler(selector Selector, candidates []Candidate, log logger.Logger, c client.Client, googPartnerSolution string) *Reconciler {
 	return &Reconciler{
-		selector:   selector,
-		candidates: candidates,
-		log:        log,
-		client:     c,
+		selector:            selector,
+		candidates:          candidates,
+		log:                 log,
+		client:              c,
+		googPartnerSolution: googPartnerSolution,
 	}
 }
 
@@ -62,13 +64,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Step 3: Select MC and DNS zone.
-	mc, domain, googPartnerSolution, err := r.selector.Select(ctx, r.candidates)
+	mc, domain, err := r.selector.Select(ctx, r.candidates)
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("placement: select MC for cluster %s: %w", clusterID, err)
 	}
 
 	r.log.Infof(ctx, "placement: cluster %s: selected MC %s, domain %s", clusterID, mc, domain)
-	if googPartnerSolution == "" {
+	if r.googPartnerSolution == "" {
 		r.log.Infof(ctx, "placement: cluster %s: goog-partner-solution label not found in argocd-cluster secret — resourceLabels will be omitted from HostedCluster", clusterID)
 	}
 
@@ -76,7 +78,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	cluster.Status.PlacementResult = &privatev1.PlacementResult{
 		ManagementClusterName: mc,
 		BaseDomain:            domain,
-		GoogPartnerSolution:   googPartnerSolution,
+		GoogPartnerSolution:   r.googPartnerSolution,
 	}
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 		Type:               "ManagementClusterSelected",

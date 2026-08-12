@@ -94,30 +94,28 @@ func NewDynamicSelector(smClient *secretmanager.Client, project, maestroURL stri
 
 // Select discovers eligible MCs and DNS zones dynamically, then picks one of
 // each using a round-robin counter. The candidates parameter is ignored.
-// googPartnerSolution is read from the region's argocd-cluster secret; it is empty
-// when the label is absent from the secret (a warning is logged, not an error).
-func (s *DynamicSelector) Select(ctx context.Context, _ []Candidate) (mcName, baseDomain, googPartnerSolution string, err error) {
+func (s *DynamicSelector) Select(ctx context.Context, _ []Candidate) (mcName, baseDomain string, err error) {
 	eligible, err := s.eligibleMCs(ctx)
 	if err != nil {
-		return "", "", "", fmt.Errorf("discover eligible MCs: %w", err)
+		return "", "", fmt.Errorf("discover eligible MCs: %w", err)
 	}
 	if len(eligible) == 0 {
-		return "", "", "", fmt.Errorf("no eligible management clusters found (check Secret Manager labels and Maestro consumers)")
+		return "", "", fmt.Errorf("no eligible management clusters found (check Secret Manager labels and Maestro consumers)")
 	}
 
 	mc := eligible[s.mcCounter.Add(1)%uint64(len(eligible))]
 
-	domains, partnerSolution, err := s.hcDNSDomains(ctx)
+	domains, err := s.hcDNSDomains(ctx)
 	if err != nil {
-		return "", "", "", fmt.Errorf("discover DNS domains: %w", err)
+		return "", "", fmt.Errorf("discover DNS domains: %w", err)
 	}
 	if len(domains) == 0 {
-		return "", "", "", fmt.Errorf("no HC DNS domains found in Secret Manager for project %s", s.project)
+		return "", "", fmt.Errorf("no HC DNS domains found in Secret Manager for project %s", s.project)
 	}
 
 	domain := domains[s.domCounter.Add(1)%uint64(len(domains))]
 
-	return mc, domain, partnerSolution, nil
+	return mc, domain, nil
 }
 
 // eligibleMCs returns MC names present in both Secret Manager and Maestro.
@@ -208,17 +206,14 @@ func (s *DynamicSelector) maestroConsumerNames(ctx context.Context) ([]string, e
 }
 
 // hcDNSDomains reads the argocd-cluster region secret from Secret Manager and
-// returns the comma-separated domains from its meta_hc_dns_domains field, and
-// the goog-partner-solution label value from meta_common_labels.
-// If meta_common_labels is absent or does not contain goog-partner-solution,
-// an empty string is returned for partnerSolution (not an error).
-func (s *DynamicSelector) hcDNSDomains(ctx context.Context) (domains []string, partnerSolution string, err error) {
+// returns the comma-separated domains from its meta_hc_dns_domains field.
+func (s *DynamicSelector) hcDNSDomains(ctx context.Context) ([]string, error) {
 	secrets, err := s.smLookup.listSecrets(ctx,
 		fmt.Sprintf("projects/%s", s.project),
 		`labels.infra-type:region name:argocd-cluster`,
 	)
 	if err != nil {
-		return nil, "", fmt.Errorf("list argocd-cluster secrets: %w", err)
+		return nil, fmt.Errorf("list argocd-cluster secrets: %w", err)
 	}
 
 	var secretName string
@@ -228,37 +223,27 @@ func (s *DynamicSelector) hcDNSDomains(ctx context.Context) (domains []string, p
 	}
 
 	if secretName == "" {
-		return nil, "", fmt.Errorf("no secret matching name:argocd-cluster with labels.infra-type=region found in project %s", s.project)
+		return nil, fmt.Errorf("no secret matching name:argocd-cluster with labels.infra-type=region found in project %s", s.project)
 	}
 
 	data, err := s.smLookup.accessSecretVersion(ctx, secretName+"/versions/latest")
 	if err != nil {
-		return nil, "", fmt.Errorf("access secret %s: %w", secretName, err)
+		return nil, fmt.Errorf("access secret %s: %w", secretName, err)
 	}
 
 	var payload struct {
 		MetaHCDNSDomains string `json:"meta_hc_dns_domains"`
-		MetaCommonLabels string `json:"meta_common_labels"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, "", fmt.Errorf("unmarshal secret payload: %w", err)
+		return nil, fmt.Errorf("unmarshal secret payload: %w", err)
 	}
 
+	var domains []string
 	for _, d := range strings.Split(payload.MetaHCDNSDomains, ",") {
 		if d = strings.TrimSpace(d); d != "" {
 			domains = append(domains, d)
 		}
 	}
 
-	// Parse meta_common_labels (JSON-encoded map) to extract goog-partner-solution.
-	// A missing or malformed field is non-fatal — log a warning and continue.
-	if payload.MetaCommonLabels != "" {
-		var commonLabels map[string]string
-		if err := json.Unmarshal([]byte(payload.MetaCommonLabels), &commonLabels); err == nil {
-			partnerSolution = commonLabels["goog-partner-solution"]
-		}
-		// Malformed JSON is silently ignored; partnerSolution stays "".
-	}
-
-	return domains, partnerSolution, nil
+	return domains, nil
 }

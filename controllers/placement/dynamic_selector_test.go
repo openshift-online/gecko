@@ -70,21 +70,9 @@ func maestroResponse(names ...string) []byte {
 	return b
 }
 
-// dnsPayload encodes a Secret Manager payload with the given comma-separated domains
-// and no meta_common_labels.
+// dnsPayload encodes a Secret Manager payload with the given comma-separated domains.
 func dnsPayload(domains string) []byte {
 	b, _ := json.Marshal(map[string]string{"meta_hc_dns_domains": domains})
-	return b
-}
-
-// dnsPayloadWithLabels encodes a Secret Manager payload with domains and a
-// meta_common_labels JSON string containing the given labels map.
-func dnsPayloadWithLabels(domains string, labels map[string]string) []byte {
-	labelsJSON, _ := json.Marshal(labels)
-	b, _ := json.Marshal(map[string]string{
-		"meta_hc_dns_domains":  domains,
-		"meta_common_labels":   string(labelsJSON),
-	})
 	return b
 }
 
@@ -248,7 +236,7 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 			secretData: dnsPayload("us-central1.example.com"),
 		}
 		s := newSelector(sm, nil)
-		domains, _, err := s.hcDNSDomains(ctx)
+		domains, err := s.hcDNSDomains(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"us-central1.example.com"}, domains)
 	})
@@ -261,7 +249,7 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 			secretData: dnsPayload("a.example.com,b.example.com,c.example.com"),
 		}
 		s := newSelector(sm, nil)
-		domains, _, err := s.hcDNSDomains(ctx)
+		domains, err := s.hcDNSDomains(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"a.example.com", "b.example.com", "c.example.com"}, domains)
 	})
@@ -274,7 +262,7 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 			secretData: dnsPayload("  a.example.com , b.example.com "),
 		}
 		s := newSelector(sm, nil)
-		domains, _, err := s.hcDNSDomains(ctx)
+		domains, err := s.hcDNSDomains(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"a.example.com", "b.example.com"}, domains)
 	})
@@ -290,7 +278,7 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 			secretData: dnsPayload("first.example.com"),
 		}
 		s := newSelector(sm, nil)
-		_, _, err := s.hcDNSDomains(ctx)
+		_, err := s.hcDNSDomains(ctx)
 		require.NoError(t, err)
 		assert.Equal(t, "projects/p/secrets/first/versions/latest", sm.accessedName)
 	})
@@ -298,7 +286,7 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 	t.Run("no matching secret → error mentioning project", func(t *testing.T) {
 		sm := &mockSMLookup{listResponses: map[string][]*secretmanagerpb.Secret{}}
 		s := newSelector(sm, nil)
-		_, _, err := s.hcDNSDomains(ctx)
+		_, err := s.hcDNSDomains(ctx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), testProject)
 	})
@@ -306,7 +294,7 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 	t.Run("listSecrets error → error propagated", func(t *testing.T) {
 		sm := &mockSMLookup{listErr: fmt.Errorf("gcp down")}
 		s := newSelector(sm, nil)
-		_, _, err := s.hcDNSDomains(ctx)
+		_, err := s.hcDNSDomains(ctx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "list argocd-cluster secrets")
 	})
@@ -319,7 +307,7 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 			accessErr: fmt.Errorf("permission denied"),
 		}
 		s := newSelector(sm, nil)
-		_, _, err := s.hcDNSDomains(ctx)
+		_, err := s.hcDNSDomains(ctx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "access secret")
 		assert.Contains(t, err.Error(), "permission denied")
@@ -333,7 +321,7 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 			secretData: []byte("not-json"),
 		}
 		s := newSelector(sm, nil)
-		_, _, err := s.hcDNSDomains(ctx)
+		_, err := s.hcDNSDomains(ctx)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unmarshal")
 	})
@@ -346,75 +334,9 @@ func TestDynamicSelector_hcDNSDomains(t *testing.T) {
 			secretData: dnsPayload(""),
 		}
 		s := newSelector(sm, nil)
-		domains, _, err := s.hcDNSDomains(ctx)
+		domains, err := s.hcDNSDomains(ctx)
 		require.NoError(t, err)
 		assert.Empty(t, domains)
-	})
-
-	t.Run("meta_common_labels contains goog-partner-solution → returned", func(t *testing.T) {
-		sm := &mockSMLookup{
-			listResponses: map[string][]*secretmanagerpb.Secret{
-				filterArgoCD: {smSecret("projects/p/secrets/argocd", nil)},
-			},
-			secretData: dnsPayloadWithLabels("us-central1.example.com", map[string]string{
-				"goog-partner-solution": "isol_psn_0014m00001h31bnqaq_openshift",
-				"environment":           "dev",
-			}),
-		}
-		s := newSelector(sm, nil)
-		domains, partnerSolution, err := s.hcDNSDomains(ctx)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"us-central1.example.com"}, domains)
-		assert.Equal(t, "isol_psn_0014m00001h31bnqaq_openshift", partnerSolution)
-	})
-
-	t.Run("meta_common_labels absent → empty partnerSolution, no error", func(t *testing.T) {
-		sm := &mockSMLookup{
-			listResponses: map[string][]*secretmanagerpb.Secret{
-				filterArgoCD: {smSecret("projects/p/secrets/argocd", nil)},
-			},
-			secretData: dnsPayload("us-central1.example.com"),
-		}
-		s := newSelector(sm, nil)
-		domains, partnerSolution, err := s.hcDNSDomains(ctx)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"us-central1.example.com"}, domains)
-		assert.Empty(t, partnerSolution)
-	})
-
-	t.Run("meta_common_labels present but goog-partner-solution absent → empty partnerSolution", func(t *testing.T) {
-		sm := &mockSMLookup{
-			listResponses: map[string][]*secretmanagerpb.Secret{
-				filterArgoCD: {smSecret("projects/p/secrets/argocd", nil)},
-			},
-			secretData: dnsPayloadWithLabels("us-central1.example.com", map[string]string{
-				"environment": "dev",
-			}),
-		}
-		s := newSelector(sm, nil)
-		_, partnerSolution, err := s.hcDNSDomains(ctx)
-		require.NoError(t, err)
-		assert.Empty(t, partnerSolution)
-	})
-
-	t.Run("meta_common_labels malformed JSON → empty partnerSolution, no error", func(t *testing.T) {
-		sm := &mockSMLookup{
-			listResponses: map[string][]*secretmanagerpb.Secret{
-				filterArgoCD: {smSecret("projects/p/secrets/argocd", nil)},
-			},
-			secretData: func() []byte {
-				b, _ := json.Marshal(map[string]string{
-					"meta_hc_dns_domains": "us-central1.example.com",
-					"meta_common_labels":  "not-valid-json",
-				})
-				return b
-			}(),
-		}
-		s := newSelector(sm, nil)
-		domains, partnerSolution, err := s.hcDNSDomains(ctx)
-		require.NoError(t, err)
-		assert.Equal(t, []string{"us-central1.example.com"}, domains)
-		assert.Empty(t, partnerSolution)
 	})
 }
 
@@ -530,34 +452,14 @@ func TestDynamicSelector_Select(t *testing.T) {
 		return newSelector(sm, srv), srv
 	}
 
-	t.Run("happy path: returns single MC, domain and partner solution", func(t *testing.T) {
-		sm := &mockSMLookup{
-			listResponses: map[string][]*secretmanagerpb.Secret{
-				filterMCNames: {smSecret("s1", map[string]string{"maestro-consumer-name": "mc-a"})},
-				filterArgoCD:  {smSecret("projects/p/secrets/argocd", nil)},
-			},
-			secretData: dnsPayloadWithLabels("us-central1.example.com", map[string]string{
-				"goog-partner-solution": "isol_psn_0014m00001h31bnqaq_openshift",
-			}),
-		}
-		srv := maestroServer(t, http.StatusOK, maestroResponse("mc-a"))
-		defer srv.Close()
-		s := newSelector(sm, srv)
-
-		mc, domain, partnerSolution, err := s.Select(ctx, nil)
-		require.NoError(t, err)
-		assert.Equal(t, "mc-a", mc)
-		assert.Equal(t, "us-central1.example.com", domain)
-		assert.Equal(t, "isol_psn_0014m00001h31bnqaq_openshift", partnerSolution)
-	})
-
-	t.Run("happy path: missing partner label → empty string, no error", func(t *testing.T) {
+	t.Run("happy path: returns single MC and domain", func(t *testing.T) {
 		s, srv := buildFullMock(t, []string{"mc-a"}, "us-central1.example.com")
 		defer srv.Close()
 
-		_, _, partnerSolution, err := s.Select(ctx, nil)
+		mc, domain, err := s.Select(ctx, nil)
 		require.NoError(t, err)
-		assert.Empty(t, partnerSolution)
+		assert.Equal(t, "mc-a", mc)
+		assert.Equal(t, "us-central1.example.com", domain)
 	})
 
 	t.Run("round-robins across multiple eligible MCs", func(t *testing.T) {
@@ -566,7 +468,7 @@ func TestDynamicSelector_Select(t *testing.T) {
 
 		seen := map[string]bool{}
 		for i := 0; i < 6; i++ {
-			mc, _, _, err := s.Select(ctx, nil)
+			mc, _, err := s.Select(ctx, nil)
 			require.NoError(t, err)
 			seen[mc] = true
 		}
@@ -581,7 +483,7 @@ func TestDynamicSelector_Select(t *testing.T) {
 
 		seen := map[string]bool{}
 		for i := 0; i < 4; i++ {
-			_, domain, _, err := s.Select(ctx, nil)
+			_, domain, err := s.Select(ctx, nil)
 			require.NoError(t, err)
 			seen[domain] = true
 		}
@@ -600,7 +502,7 @@ func TestDynamicSelector_Select(t *testing.T) {
 		defer srv.Close()
 
 		s := newSelector(sm, srv)
-		_, _, _, err := s.Select(ctx, nil)
+		_, _, err := s.Select(ctx, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no eligible management clusters")
 	})
@@ -617,7 +519,7 @@ func TestDynamicSelector_Select(t *testing.T) {
 		defer srv.Close()
 
 		s := newSelector(sm, srv)
-		_, _, _, err := s.Select(ctx, nil)
+		_, _, err := s.Select(ctx, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no HC DNS domains")
 	})
@@ -628,7 +530,7 @@ func TestDynamicSelector_Select(t *testing.T) {
 		defer srv.Close()
 
 		s := newSelector(sm, srv)
-		_, _, _, err := s.Select(ctx, nil)
+		_, _, err := s.Select(ctx, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "discover eligible MCs")
 	})
@@ -643,7 +545,7 @@ func TestDynamicSelector_Select(t *testing.T) {
 		defer srv.Close()
 
 		s := newSelector(sm, srv)
-		_, _, _, err := s.Select(ctx, nil)
+		_, _, err := s.Select(ctx, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "discover eligible MCs")
 	})
