@@ -11,7 +11,7 @@ import (
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	placement "github.com/openshift-online/gecko/controllers/placement"
-	"github.com/openshift-online/gecko/controllers/util/gcp"
+	"github.com/openshift-online/gecko/controllers/util/regional"
 	"github.com/openshift-online/gecko/controllers/util/setup"
 )
 
@@ -56,7 +56,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				}
 				defer smClient.Close() //nolint:errcheck
 				selector = placement.NewDynamicSelector(smClient, smProject, maestroHTTPAddr)
-				googPartnerSolution = gcp.ReadGoogPartnerSolutionWithLogging(ctx, smClient, smProject, log)
+				googPartnerSolution = regional.ReadGoogPartnerSolution(ctx, smClient, smProject, log)
 			} else {
 				candidates = make([]placement.Candidate, 0, len(candidateNames))
 				for i, name := range candidateNames {

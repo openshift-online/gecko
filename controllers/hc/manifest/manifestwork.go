@@ -43,10 +43,7 @@ type Input struct {
 	CPOImage                     string // optional — set CPO annotation if non-empty
 	CAPGImage                    string // optional — set CAPG annotation if non-empty
 	Slug                         string // default: "user" (username slug for DNS names)
-	// GoogPartnerSolution is the value of the goog-partner-solution GCP resource label,
-	// sourced from PlacementResult. When non-empty, sets spec.platform.gcp.resourceLabels
-	// on the HostedCluster CR. When empty, resourceLabels is omitted entirely.
-	GoogPartnerSolution string
+	GoogPartnerSolution          string // optional — sets spec.platform.gcp.resourceLabels on the HostedCluster CR
 }
 
 // Build constructs a *workv1.ManifestWork from the given input.
