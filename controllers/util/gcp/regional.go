@@ -3,6 +3,7 @@ package gcp
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	secretmanagerpb "cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
@@ -67,8 +68,11 @@ func ReadGoogPartnerSolutionWithLogging(ctx context.Context, smClient *secretman
 		return ""
 	}
 
+	// Unescape the JSON string if it contains escaped quotes (e.g., \" stored as \\\")
+	unescapedLabels := strings.ReplaceAll(payload.MetaCommonLabels, "\\\"", "\"")
+
 	var commonLabels map[string]string
-	if err := json.Unmarshal([]byte(payload.MetaCommonLabels), &commonLabels); err != nil {
+	if err := json.Unmarshal([]byte(unescapedLabels), &commonLabels); err != nil {
 		log.Warnf(ctx, "gcp: failed to unmarshal meta_common_labels JSON: %v", err)
 		return ""
 	}
@@ -141,8 +145,11 @@ func ReadGoogPartnerSolution(ctx context.Context, smClient *secretmanager.Client
 		return ""
 	}
 
+	// Unescape the JSON string if it contains escaped quotes (e.g., \" stored as \\\")
+	unescapedLabels := strings.ReplaceAll(payload.MetaCommonLabels, "\\\"", "\"")
+
 	var commonLabels map[string]string
-	if err := json.Unmarshal([]byte(payload.MetaCommonLabels), &commonLabels); err != nil {
+	if err := json.Unmarshal([]byte(unescapedLabels), &commonLabels); err != nil {
 		return ""
 	}
 
