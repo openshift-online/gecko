@@ -56,7 +56,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				}
 				defer smClient.Close() //nolint:errcheck
 				selector = placement.NewDynamicSelector(smClient, smProject, maestroHTTPAddr)
-				googPartnerSolution = gcp.ReadGoogPartnerSolution(ctx, smClient, smProject)
+				googPartnerSolution = gcp.ReadGoogPartnerSolutionWithLogging(ctx, smClient, smProject, log)
 			} else {
 				candidates = make([]placement.Candidate, 0, len(candidateNames))
 				for i, name := range candidateNames {
