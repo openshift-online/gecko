@@ -310,6 +310,9 @@ func (s *SpannerStore) List(ctx context.Context, opts storage.ListOptions) (clie
 		qb.whereContextFilter(filterValue)
 	}
 	qb.whereNamespace(opts.Namespace)
+	if opts.Namespace == "" {
+		qb.whereNamespaces(opts.Namespaces)
+	}
 
 	if opts.LabelSelector != "" {
 		selector, err := labels.Parse(opts.LabelSelector)
@@ -597,8 +600,14 @@ func (s *SpannerStore) Watch(ctx context.Context, opts storage.ListOptions, reso
 					}
 				}
 
-				if opts.Namespace != "" && event.Object.GetNamespace() != opts.Namespace {
-					continue
+				if opts.Namespace != "" {
+					if event.Object.GetNamespace() != opts.Namespace {
+						continue
+					}
+				} else if len(opts.Namespaces) > 0 {
+					if !containsString(opts.Namespaces, event.Object.GetNamespace()) {
+						continue
+					}
 				}
 
 				if labelSelector != nil && !labelSelector.Matches(labels.Set(event.Object.GetLabels())) {
@@ -671,6 +680,16 @@ func (s *SpannerStore) Close() error {
 		return b.Close()
 	}
 	return nil
+}
+
+// containsString checks if a string is present in a slice.
+func containsString(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 var _ storage.ResourceStore = (*SpannerStore)(nil)

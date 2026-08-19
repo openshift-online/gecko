@@ -286,6 +286,11 @@ func (h *ConvertingResourceHandler) List(w http.ResponseWriter, r *http.Request)
 
 	applyParentFilterToListOpts(r.Context(), &opts)
 
+	// Apply authorized namespaces from context (set by authz middleware)
+	if ns := AuthorizedNamespacesFromContext(r.Context()); ns != nil {
+		opts.Namespaces = ns
+	}
+
 	// Check if this is a watch request
 	if r.URL.Query().Get(constants.QueryParamWatch) == "true" {
 		if namespace == "" {
@@ -316,9 +321,16 @@ func (h *ConvertingResourceHandler) List(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Apply per-item filter (e.g., condition-based authorization) before conversion.
+	itemFilter := ItemFilterFromContext(r.Context())
+
 	// Convert each private object to public
 	publicObjects := make([]runtime.Object, 0, len(privateItems))
 	for _, privateObj := range privateItems {
+		// Apply item filter on the private object before conversion.
+		if itemFilter != nil && !itemFilter(r.Context(), privateObj) {
+			continue
+		}
 		publicObj, err := h.converter.PrivateToPublic(privateObj)
 		if err != nil {
 			continue // Skip objects that fail conversion

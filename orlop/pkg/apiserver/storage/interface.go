@@ -15,6 +15,12 @@ type ListOptions struct {
 	// Empty string means all namespaces.
 	Namespace string
 
+	// Namespaces limits results to the specified namespaces (OR).
+	// When non-empty, only resources in these namespaces are returned.
+	// If both Namespace (singular) and Namespaces (plural) are set,
+	// Namespace takes precedence as it is more specific.
+	Namespaces []string
+
 	// ShardSelector specifies which shard of results to return.
 	// Nil means return all results (no sharding).
 	ShardSelector *ShardSelector

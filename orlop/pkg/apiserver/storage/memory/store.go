@@ -254,9 +254,15 @@ func (s *MemoryStore) List(ctx context.Context, opts storage.ListOptions) (clien
 		}
 		// Use the base key (without filter prefix) for namespace matching
 		baseKey := s.stripFilterPrefix(key)
-		// Filter by namespace
-		if opts.Namespace != "" && !s.matchesNamespace(baseKey, opts.Namespace) {
-			continue
+		// Filter by namespace: singular takes precedence over plural
+		if opts.Namespace != "" {
+			if !s.matchesNamespace(baseKey, opts.Namespace) {
+				continue
+			}
+		} else if len(opts.Namespaces) > 0 {
+			if !s.matchesAnyNamespace(baseKey, opts.Namespaces) {
+				continue
+			}
 		}
 		keys = append(keys, key)
 	}
@@ -455,6 +461,16 @@ func (s *MemoryStore) matchesNamespace(key, namespace string) bool {
 	return len(key) > len(expectedPrefix) && key[:len(expectedPrefix)] == expectedPrefix
 }
 
+// matchesAnyNamespace checks if a key belongs to any of the given namespaces.
+func (s *MemoryStore) matchesAnyNamespace(key string, namespaces []string) bool {
+	for _, ns := range namespaces {
+		if s.matchesNamespace(key, ns) {
+			return true
+		}
+	}
+	return false
+}
+
 // parseKey extracts namespace and name from a storage key.
 func (s *MemoryStore) parseKey(key string) (namespace, name string) {
 	parts := strings.SplitN(key, "/", 2)
@@ -533,18 +549,26 @@ func (s *MemoryStore) Watch(ctx context.Context, opts storage.ListOptions, resou
 					}
 				}
 
-				// Filter by namespace
-				if opts.Namespace != "" {
-					accessor, err := meta.Accessor(event.Object)
-					if err != nil {
-						continue
-					}
-					if accessor.GetNamespace() != opts.Namespace {
-						continue
-					}
+			// Filter by namespace: singular takes precedence over plural
+			if opts.Namespace != "" {
+				accessor, err := meta.Accessor(event.Object)
+				if err != nil {
+					continue
 				}
+				if accessor.GetNamespace() != opts.Namespace {
+					continue
+				}
+			} else if len(opts.Namespaces) > 0 {
+				accessor, err := meta.Accessor(event.Object)
+				if err != nil {
+					continue
+				}
+				if !containsString(opts.Namespaces, accessor.GetNamespace()) {
+					continue
+				}
+			}
 
-				// Filter by label selector
+			// Filter by label selector
 				if labelSelector != nil {
 					accessor, err := meta.Accessor(event.Object)
 					if err != nil {
@@ -621,4 +645,14 @@ func fieldValueFromMap(m map[string]interface{}, path string) string {
 // int64Ptr returns a pointer to an int64 value.
 func int64Ptr(v int64) *int64 {
 	return &v
+}
+
+// containsString checks if a string is present in a slice.
+func containsString(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
