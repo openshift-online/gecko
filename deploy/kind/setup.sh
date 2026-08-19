@@ -52,7 +52,12 @@ echo "==> Waiting for cert-manager webhook..."
 kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=120s
 
 echo "==> Creating self-signed ClusterIssuer..."
-kubectl apply -f "$SCRIPT_DIR/clusterissuer.yaml"
+# The webhook can take a few seconds after the rollout reports ready.
+for i in 1 2 3 4 5; do
+  kubectl apply -f "$SCRIPT_DIR/clusterissuer.yaml" 2>/dev/null && break
+  echo "    waiting for cert-manager webhook (attempt $i)..."
+  sleep 5
+done
 
 load_image() {
   local image="$1"
@@ -69,9 +74,16 @@ load_image() {
   fi
 }
 
-echo "==> Building platform-api-server image..."
-$BUILDER build -f "$SCRIPT_DIR/../platform-api/Containerfile" \
-  -t localhost/platform-api-server:latest "$REPO_ROOT"
+# Determine the target architecture for the kind node.
+KIND_ARCH="$(kubectl get node "$CLUSTER_NAME-control-plane" -o jsonpath='{.status.nodeInfo.architecture}' 2>/dev/null || echo amd64)"
+
+echo "==> Building platform-api-server binary (host-native, target linux/$KIND_ARCH)..."
+(cd "$REPO_ROOT/platform-api" && CGO_ENABLED=0 GOOS=linux GOARCH="$KIND_ARCH" \
+  go build -o "$REPO_ROOT/_output/platform-api-server" ./cmd/platform-api-server)
+
+echo "==> Building container image..."
+$BUILDER build -f "$SCRIPT_DIR/Containerfile" \
+  -t localhost/platform-api-server:latest "$REPO_ROOT/_output"
 echo "==> Loading platform-api-server into kind cluster '$CLUSTER_NAME'..."
 load_image localhost/platform-api-server:latest
 

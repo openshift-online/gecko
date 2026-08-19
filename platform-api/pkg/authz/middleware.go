@@ -199,7 +199,12 @@ func buildCedarContext(r *http.Request, parsed parsedRoute) (cedar.Record, []byt
 		}
 		if len(bodyBytes) > 0 {
 			var obj map[string]interface{}
-			if json.Unmarshal(bodyBytes, &obj) == nil {
+			// Use a Decoder with UseNumber to preserve numeric precision.
+			// JSON Patch arrays (application/json-patch+json) will fail to
+			// decode into a map — this is expected; spec extraction is skipped.
+			dec := json.NewDecoder(bytes.NewReader(bodyBytes))
+			dec.UseNumber()
+			if dec.Decode(&obj) == nil {
 				// Extract name from metadata if not in URL.
 				if parsed.name == "" {
 					if meta, ok := obj["metadata"].(map[string]interface{}); ok {
@@ -237,10 +242,13 @@ func buildCedarContextFromObject(obj runtime.Object, plural string) cedar.Record
 	}
 
 	// Marshal the object to JSON and extract the spec field.
+	// Use a Decoder with UseNumber for consistent numeric precision.
 	data, err := json.Marshal(obj)
 	if err == nil {
 		var generic map[string]interface{}
-		if json.Unmarshal(data, &generic) == nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.UseNumber()
+		if dec.Decode(&generic) == nil {
 			if spec, ok := generic["spec"].(map[string]interface{}); ok {
 				rm[cedar.String("spec")] = mapToCedarRecord(spec)
 			}
@@ -270,6 +278,12 @@ func anyToCedar(v interface{}) cedar.Value {
 		return cedar.String(val)
 	case bool:
 		return cedar.Boolean(val)
+	case json.Number:
+		// Prefer integer representation; fall back to string for non-integral values.
+		if n, err := val.Int64(); err == nil {
+			return cedar.Long(n)
+		}
+		return cedar.String(val.String())
 	case float64:
 		return cedar.Long(int64(val))
 	case map[string]interface{}:

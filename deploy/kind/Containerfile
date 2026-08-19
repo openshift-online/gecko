@@ -1,0 +1,17 @@
+# Lightweight Containerfile for kind development.
+# Expects the binary to be pre-built on the host and passed via build context.
+# This avoids compiling Go inside the container VM, which is very slow on macOS.
+#
+# Usage:
+#   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o _output/platform-api-server ./cmd/platform-api-server
+#   podman build -f deploy/kind/Containerfile -t localhost/platform-api-server:latest _output/
+FROM registry.access.redhat.com/ubi9/ubi-micro:latest
+
+LABEL name="gecko-platform-api-server" \
+      summary="Gecko Platform API Server (kind dev build)"
+
+RUN mkdir /app && chown 65532:65532 /app
+COPY platform-api-server /app/platform-api-server
+USER 65532:65532
+WORKDIR /app
+ENTRYPOINT ["/app/platform-api-server"]

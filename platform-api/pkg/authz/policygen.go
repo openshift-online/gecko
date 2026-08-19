@@ -19,11 +19,21 @@ import (
 func GeneratePolicies(platformRoles []privatev1.PlatformRole, roles []privatev1.Role, bindings []privatev1.RoleBinding) (*cedar.PolicySet, error) {
 	ps := cedar.NewPolicySet()
 
-	// Index bindings by "kind/name" to prevent collisions between
-	// PlatformRoles and Roles that share the same name.
+	// Index bindings by a composite key that prevents collisions:
+	// - PlatformRole (cluster-scoped): "PlatformRole/name"
+	// - Role (namespace-scoped): "Role/namespace/name"
+	// Without the namespace, two Roles named "viewer" in different
+	// namespaces would share bindings during policy generation.
 	bindingsByRole := make(map[string][]privatev1.RoleBinding)
 	for _, b := range bindings {
-		key := b.Spec.RoleRef.Kind + "/" + b.Spec.RoleRef.Name
+		var key string
+		switch b.Spec.RoleRef.Kind {
+		case privatev1.RoleRefKindPlatformRole:
+			key = b.Spec.RoleRef.Kind + "/" + b.Spec.RoleRef.Name
+		default:
+			// Namespace-scoped roles: include the binding's namespace.
+			key = b.Spec.RoleRef.Kind + "/" + b.Namespace + "/" + b.Spec.RoleRef.Name
+		}
 		bindingsByRole[key] = append(bindingsByRole[key], b)
 	}
 
@@ -66,7 +76,7 @@ func GeneratePolicies(platformRoles []privatev1.PlatformRole, roles []privatev1.
 			return nil, fmt.Errorf("role %q: %w", role.Name, err)
 		}
 
-		roleBindings := bindingsByRole[privatev1.RoleRefKindRole+"/"+role.Name]
+		roleBindings := bindingsByRole[privatev1.RoleRefKindRole+"/"+role.Namespace+"/"+role.Name]
 		for _, rb := range roleBindings {
 			// Each binding gets a unique NamespaceRole entity keyed by
 			// "ns/roleName/bindingName" so that conditions on one binding cannot
