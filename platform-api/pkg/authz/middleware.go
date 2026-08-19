@@ -187,9 +187,9 @@ func buildCedarContext(r *http.Request, parsed parsedRoute) (cedar.Record, []byt
 		cedar.String("method"):         cedar.String(r.Method),
 	}
 
-	// For write operations (POST/PUT) or any request with a body, parse it.
+	// For write operations (POST/PUT/PATCH) or any request with a body, parse it.
 	var bodyBytes []byte
-	if r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut) {
+	if r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch) {
 		// Limit the body read to prevent memory exhaustion.
 		limitedReader := io.LimitReader(r.Body, maxAuthzBodyBytes)
 		var err error

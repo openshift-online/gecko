@@ -168,7 +168,13 @@ func (ws *watchStreamer) checkAndSendCatchupBookmark(eventRV string, allowBookma
 // Allows converting/transforming objects (e.g., private to public conversion).
 type objectTransformer func(client.Object) (interface{}, error)
 
-// streamWatch runs the watch event loop with optional object transformation.
+// streamWatch runs the watch event loop with optional object transformation
+// and per-item filtering.
+//
+// The itemFilter parameter, when non-nil, is applied to each event object before
+// sending it to the client. This ensures that watch events are subject to the
+// same authorization filtering as list responses, preventing a conditional
+// RoleBinding from leaking objects through the watch stream.
 func streamWatch(
 	ctx context.Context,
 	streamer *watchStreamer,
@@ -177,6 +183,7 @@ func streamWatch(
 	listOpts storage.ListOptions,
 	store storage.ResourceStore,
 	transformer objectTransformer,
+	itemFilter ItemFilterFunc,
 ) {
 	// Setup periodic bookmarks
 	var bookmarkTicker *time.Ticker
@@ -195,6 +202,11 @@ func streamWatch(
 			for _, item := range items {
 				obj, ok := item.(client.Object)
 				if !ok {
+					continue
+				}
+
+				// Apply item filter (e.g., condition-based authorization).
+				if itemFilter != nil && !itemFilter(ctx, obj) {
 					continue
 				}
 
@@ -252,6 +264,12 @@ func streamWatch(
 			// Update last resource version
 			streamer.lastResourceVersion = event.ResourceVersion
 			obj := event.Object
+
+			// Apply item filter (e.g., condition-based authorization).
+			// Bookmark events have nil objects and are always forwarded.
+			if itemFilter != nil && obj != nil && !itemFilter(ctx, obj) {
+				continue
+			}
 
 			var sendObj interface{} = obj
 			if transformer != nil {

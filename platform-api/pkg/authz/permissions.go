@@ -66,24 +66,28 @@ var ResourcePluralToActions = map[string]map[string]string{
 		"POST":   "CreateCluster",
 		"GET":    "ListClusters",
 		"PUT":    "UpdateCluster",
+		"PATCH":  "UpdateCluster",
 		"DELETE": "DeleteCluster",
 	},
 	"nodepools": {
 		"POST":   "CreateNodepool",
 		"GET":    "ListNodepools",
 		"PUT":    "UpdateNodepool",
+		"PATCH":  "UpdateNodepool",
 		"DELETE": "DeleteNodepool",
 	},
 	"rolebindings": {
 		"POST":   "CreateRoleBinding",
 		"GET":    "ListRoleBindings",
 		"PUT":    "UpdateRoleBinding",
+		"PATCH":  "UpdateRoleBinding",
 		"DELETE": "DeleteRoleBinding",
 	},
 	"roles": {
 		"POST":   "CreateRole",
 		"GET":    "ListRoles",
 		"PUT":    "UpdateRole",
+		"PATCH":  "UpdateRole",
 		"DELETE": "DeleteRole",
 	},
 }

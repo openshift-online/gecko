@@ -404,14 +404,19 @@ func (s *MemoryStore) Update(ctx context.Context, obj client.Object) error {
 		return err
 	}
 
+	// Capture previous state before overwriting for event consumers
+	// that need to detect field changes (e.g., RoleBinding subject changes).
+	previousObj := existing.DeepCopyObject().(client.Object)
+
 	s.objects[key] = obj.DeepCopyObject().(client.Object)
 
-	// Broadcast watch event
+	// Broadcast watch event with previous object for change detection.
 	s.broadcaster.Broadcast(storage.ResourceEvent{
 		Type:               storage.EventModified,
 		Object:             obj.DeepCopyObject().(client.Object),
 		ResourceVersion:    fmt.Sprintf("%d", newVersion),
 		ContextFilterValue: filterValue,
+		PreviousObject:     previousObj,
 	})
 
 	return nil

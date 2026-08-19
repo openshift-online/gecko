@@ -119,4 +119,14 @@ func (a *Authorizer) invalidateFromRoleBinding(event storage.ResourceEvent) {
 		log.Printf("authz: role binding %s/%s changed, invalidating subject cache", rb.Namespace, rb.Name)
 		a.InvalidateUser(rb.Spec.Subject)
 	}
+	// On updates, also invalidate the previous subject if it changed.
+	// Without this, a subject swap (old→new) would leave the old subject
+	// with stale cached entities that still grant the removed permissions.
+	if event.PreviousObject != nil {
+		prevRB, ok := event.PreviousObject.(*privatev1.RoleBinding)
+		if ok && prevRB.Spec.Subject != "" && prevRB.Spec.Subject != rb.Spec.Subject {
+			log.Printf("authz: role binding %s/%s subject changed, invalidating previous subject cache", rb.Namespace, rb.Name)
+			a.InvalidateUser(prevRB.Spec.Subject)
+		}
+	}
 }

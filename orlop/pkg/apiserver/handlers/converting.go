@@ -403,8 +403,11 @@ func (h *ConvertingResourceHandler) handleWatch(w http.ResponseWriter, r *http.R
 		return h.converter.PrivateToPublic(obj)
 	}
 
-	// Stream watch events with transformation
-	streamWatch(ctx, streamer, eventCh, config, opts, h.store, transformer)
+	// Retrieve item filter from context for per-item authorization on watch events.
+	itemFilter := ItemFilterFromContext(r.Context())
+
+	// Stream watch events with transformation and filtering
+	streamWatch(ctx, streamer, eventCh, config, opts, h.store, transformer, itemFilter)
 }
 
 // Update handles PUT requests to update a resource.
