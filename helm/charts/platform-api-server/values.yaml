@@ -191,3 +191,11 @@ spanner:
     role: "roles/spanner.databaseUser"
     migrationServiceAccount: ""
     migrationRole: "roles/spanner.databaseAdmin"
+
+# PlatformRoles - System roles for Cedar authorization
+# These cluster-scoped resources define the built-in permission sets
+# (cluster-viewer, cluster-admin, service-admin) that can be bound to users
+# via RoleBinding resources. Set enabled: false if PlatformRoles are managed
+# externally (e.g., in a separate GitOps repo or via manual kubectl apply).
+platformRoles:
+  enabled: true
