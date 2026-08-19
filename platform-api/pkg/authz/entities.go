@@ -7,6 +7,7 @@ import (
 	cedar "github.com/cedar-policy/cedar-go"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -31,9 +32,11 @@ func NewEntityGetter(stores AuthzStores) *EntityGetter {
 // BuildEntities constructs a Cedar EntityMap for the given user.
 //
 // The entity graph:
-//   - User::"email" with parents: NamespaceRole::"ns/roleName" for each RoleBinding
-//   - NamespaceRole::"ns/roleName" with parent Namespace::"ns"
+//   - User::"email" with parents: NamespaceRole::"ns/roleName/bindingName" for each RoleBinding
+//   - NamespaceRole::"ns/roleName/bindingName" with parent Namespace::"ns"
 //   - Namespace::"ns" (leaf entity)
+//
+// NamespaceRole identifiers are three-part keys including the binding name for isolation.
 func (eg *EntityGetter) BuildEntities(ctx context.Context, user string) (cedar.EntityMap, error) {
 	entities := make(cedar.EntityMap)
 	var userParents []cedar.EntityUID
@@ -146,11 +149,18 @@ func (eg *EntityGetter) AuthorizedNamespaces(ctx context.Context, user, action s
 			continue
 		}
 		var hasPerm bool
+		var err error
 		switch b.roleKind {
 		case privatev1.RoleRefKindPlatformRole:
-			hasPerm = eg.platformRoleHasPerm(ctx, b.roleName, perm)
+			hasPerm, err = eg.platformRoleHasPerm(ctx, b.roleName, perm)
+			if err != nil {
+				return nil, fmt.Errorf("check platform role permission: %w", err)
+			}
 		case privatev1.RoleRefKindRole:
-			hasPerm = eg.roleHasPerm(ctx, b.namespace, b.roleName, perm)
+			hasPerm, err = eg.roleHasPerm(ctx, b.namespace, b.roleName, perm)
+			if err != nil {
+				return nil, fmt.Errorf("check role permission: %w", err)
+			}
 		}
 		if hasPerm {
 			seen[b.namespace] = true
@@ -161,38 +171,44 @@ func (eg *EntityGetter) AuthorizedNamespaces(ctx context.Context, user, action s
 	return namespaces, nil
 }
 
-func (eg *EntityGetter) platformRoleHasPerm(ctx context.Context, roleName, perm string) bool {
+func (eg *EntityGetter) platformRoleHasPerm(ctx context.Context, roleName, perm string) (bool, error) {
 	obj, err := eg.stores.PlatformRoles.Get(ctx, "", roleName)
 	if err != nil {
-		return false
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get platform role %q: %w", roleName, err)
 	}
 	pr, ok := obj.(*privatev1.PlatformRole)
 	if !ok {
-		return false
+		return false, fmt.Errorf("unexpected type %T for platform role %q", obj, roleName)
 	}
 	for _, p := range pr.Spec.Permissions {
 		if p == perm {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-func (eg *EntityGetter) roleHasPerm(ctx context.Context, namespace, roleName, perm string) bool {
+func (eg *EntityGetter) roleHasPerm(ctx context.Context, namespace, roleName, perm string) (bool, error) {
 	obj, err := eg.stores.Roles.Get(ctx, namespace, roleName)
 	if err != nil {
-		return false
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get role %s/%s: %w", namespace, roleName, err)
 	}
 	role, ok := obj.(*privatev1.Role)
 	if !ok {
-		return false
+		return false, fmt.Errorf("unexpected type %T for role %s/%s", obj, namespace, roleName)
 	}
 	for _, p := range role.Spec.Permissions {
 		if p == perm {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // extractList extracts individual runtime.Objects from a list object.

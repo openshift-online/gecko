@@ -4,15 +4,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"path"
 	"strings"
 
 	cedar "github.com/cedar-policy/cedar-go"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/handlers"
 	"github.com/openshift-online/gecko/platform-api/pkg/authn"
 	"k8s.io/apimachinery/pkg/runtime"
+)
+
+const (
+	// maxAuthzBodyBytes is the maximum size of a request body to read for authorization context.
+	// This prevents memory exhaustion attacks via arbitrarily large POST/PUT bodies.
+	maxAuthzBodyBytes = 10 * 1024 * 1024 // 10 MB
 )
 
 // Middleware returns HTTP middleware that enforces Cedar authorization.
@@ -32,6 +40,11 @@ import (
 //
 //	GET    /apis/{group}/{version}/{plural}                                  -> cross-namespace list
 func Middleware(authorizer *Authorizer, disableAuth bool) func(http.Handler) http.Handler {
+	if disableAuth {
+		log.Println("WARNING: Authorization is disabled. This mode is for local development only. " +
+			"Do not enable in production or untrusted environments.")
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if disableAuth {
@@ -46,13 +59,14 @@ func Middleware(authorizer *Authorizer, disableAuth bool) func(http.Handler) htt
 				return
 			}
 
-			// Derive action from the URL path.
-			action, namespace, isCrossNsList := deriveAction(r)
-			if action == "" {
-				// No matching route pattern — pass through (e.g., health check endpoints).
-				next.ServeHTTP(w, r)
-				return
-			}
+		// Derive action from the URL path.
+		action, namespace, isCrossNsList := deriveAction(r)
+		if action == "" {
+			// No matching route pattern — deny the request as unauthorized.
+			// This prevents unknown routes from being silently allowed.
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 
 			ctx := r.Context()
 
@@ -106,16 +120,20 @@ func Middleware(authorizer *Authorizer, disableAuth bool) func(http.Handler) htt
 				return
 			}
 
-			// For non-list operations (single resource GET, POST, PUT, DELETE):
-			// build Cedar context with resource attributes and apply conditions.
-			cedarCtx, bodyBytes := buildCedarContext(r, parsed)
+		// For non-list operations (single resource GET, POST, PUT, DELETE):
+		// build Cedar context with resource attributes and apply conditions.
+		cedarCtx, bodyBytes, err := buildCedarContext(r, parsed)
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
 
-			// For writes with a body, restore it so the handler can re-read it.
-			if bodyBytes != nil {
-				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
-			}
+		// For writes with a body, restore it so the handler can re-read it.
+		if bodyBytes != nil {
+			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		}
 
-			allowed, err := authorizer.AuthorizeWithContext(ctx, user, action, namespace, cedarCtx)
+		allowed, err := authorizer.AuthorizeWithContext(ctx, user, action, namespace, cedarCtx)
 			if err != nil {
 				log.Printf("authz: error authorizing %q for %q: %v", user, action, err)
 				http.Error(w, "internal authorization error", http.StatusInternalServerError)
@@ -160,9 +178,9 @@ func buildItemFilter(authorizer *Authorizer, user, action, plural string) handle
 // buildCedarContext builds a Cedar Record from the HTTP request containing
 // resource attributes for condition evaluation.
 //
-// Returns the Cedar record and the raw body bytes (if body was read, so caller
-// can restore r.Body).
-func buildCedarContext(r *http.Request, parsed parsedRoute) (cedar.Record, []byte) {
+// Returns the Cedar record, the raw body bytes (if body was read, so caller
+// can restore r.Body), and an error if the body read fails or exceeds size limit.
+func buildCedarContext(r *http.Request, parsed parsedRoute) (cedar.Record, []byte, error) {
 	rm := cedar.RecordMap{
 		cedar.String("resourceName"):   cedar.String(parsed.name),
 		cedar.String("resourcePlural"): cedar.String(parsed.plural),
@@ -172,9 +190,14 @@ func buildCedarContext(r *http.Request, parsed parsedRoute) (cedar.Record, []byt
 	// For write operations (POST/PUT) or any request with a body, parse it.
 	var bodyBytes []byte
 	if r.Body != nil && (r.Method == http.MethodPost || r.Method == http.MethodPut) {
+		// Limit the body read to prevent memory exhaustion.
+		limitedReader := io.LimitReader(r.Body, maxAuthzBodyBytes)
 		var err error
-		bodyBytes, err = io.ReadAll(r.Body)
-		if err == nil && len(bodyBytes) > 0 {
+		bodyBytes, err = io.ReadAll(limitedReader)
+		if err != nil {
+			return cedar.NewRecord(rm), nil, fmt.Errorf("read request body: %w", err)
+		}
+		if len(bodyBytes) > 0 {
 			var obj map[string]interface{}
 			if json.Unmarshal(bodyBytes, &obj) == nil {
 				// Extract name from metadata if not in URL.
@@ -193,7 +216,7 @@ func buildCedarContext(r *http.Request, parsed parsedRoute) (cedar.Record, []byt
 		}
 	}
 
-	return cedar.NewRecord(rm), bodyBytes
+	return cedar.NewRecord(rm), bodyBytes, nil
 }
 
 // buildCedarContextFromObject builds a Cedar Record from a runtime.Object's
@@ -274,8 +297,18 @@ type parsedRoute struct {
 }
 
 // parseURLPath parses a URL path into its route components.
-func parseURLPath(path string) (parsedRoute, bool) {
-	trimmed := strings.Trim(path, "/")
+func parseURLPath(urlPath string) (parsedRoute, bool) {
+	// Canonicalize the path to prevent traversal attacks (e.g., //../../).
+	// Reject non-canonical paths that change when cleaned.
+	cleaned := path.Clean("/" + strings.TrimPrefix(urlPath, "/"))
+	// Compare accounting for optional trailing slash.
+	pathWithoutTrailing := strings.TrimSuffix(urlPath, "/")
+	cleanedWithoutTrailing := strings.TrimSuffix(cleaned, "/")
+	if cleanedWithoutTrailing != pathWithoutTrailing && cleaned != urlPath {
+		return parsedRoute{}, false
+	}
+
+	trimmed := strings.Trim(urlPath, "/")
 	parts := strings.Split(trimmed, "/")
 
 	if len(parts) < 4 || parts[0] != "apis" {

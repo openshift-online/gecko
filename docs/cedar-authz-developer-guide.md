@@ -4,7 +4,7 @@ This document covers the internals of gecko's Cedar-based authorization system. 
 
 ## Architecture Overview
 
-```
+```text
 ┌──────────────┐       ┌──────────────────┐       ┌────────────────┐
 │  ArgoCD/     │──────>│  Aggregated API  │──────>│   Database     │
 │  Helm        │ apply │  Server (:8443)  │ write │  (Roles,       │
@@ -157,7 +157,7 @@ The authz middleware is a chi middleware that runs after authn.
 
 The middleware expects Kubernetes API-style paths:
 
-```
+```text
 /apis/{group}/{version}/namespaces/{namespace}/{plural}           -> namespaced list/create
 /apis/{group}/{version}/namespaces/{namespace}/{plural}/{name}    -> get/update/delete
 /apis/{group}/{version}/{plural}                                  -> cross-namespace list
@@ -270,12 +270,10 @@ Each module has its own test suite. Run tests from the module directory:
 
 ```bash
 # Authorization engine and middleware tests
-cd platform-api
-make test
+(cd platform-api && make test)
 
 # Shared types and storage tests
-cd orlop
-make test
+(cd orlop && make test)
 ```
 
 For integration tests that require a database, ensure a local database is running or use the test fixtures provided in each module's `testdata/` directory.

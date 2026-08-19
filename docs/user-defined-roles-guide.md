@@ -14,9 +14,11 @@ Gecko ships with three system roles (`cluster-viewer`, `cluster-admin`, `service
 
 ## Prerequisites
 
-- You must have the **service-admin** role in the target namespace (via a RoleBinding).
+- You must have the **service-admin** role in the target namespace (via a RoleBinding) — **only when authorization is enabled**. When using `--disable-auth`, all authorization checks are skipped and you cannot validate role enforcement in this mode.
 - You need access to the gecko public API (port 8081).
-- Authentication must be configured (ESPv2 in production, or `--disable-auth` with `X-Dev-User` in dev).
+- Authentication must be configured:
+  - **Production**: ESPv2 with a valid JWT token
+  - **Local development**: `--disable-auth` with `X-Dev-User` header (bypasses all auth checks — cannot validate role enforcement)
 
 ## Creating a User-Defined Role
 
@@ -25,6 +27,7 @@ Gecko ships with three system roles (`cluster-viewer`, `cluster-admin`, `service
 ```bash
 curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/my-namespace/roles \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "metadata": {
       "name": "nodepool-viewer",
@@ -39,6 +42,8 @@ curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/name
   }'
 ```
 
+Replace `$TOKEN` with a valid JWT token from your identity provider. For local development with `--disable-auth`, use `X-Endpoint-API-UserInfo: $(echo -n '{"email":"user@example.com"}' | base64)` instead.
+
 ### Role with a Cedar condition (ABAC)
 
 Cedar conditions are placed on the **RoleBinding**, not on the Role itself. This allows the same Role to be bound with different conditions for different users. To use a condition, create the Role first, then create a RoleBinding with the `spec.condition` field set:
@@ -47,6 +52,7 @@ Cedar conditions are placed on the **RoleBinding**, not on the Role itself. This
 # 1. Create the role (no condition here)
 curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/my-namespace/roles \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "metadata": {
       "name": "us-east1-cluster-reader",
@@ -63,6 +69,7 @@ curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/name
 # 2. Bind a user with a Cedar condition on the RoleBinding
 curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/my-namespace/rolebindings \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "metadata": {
       "name": "alice-us-east1-reader",
@@ -91,7 +98,7 @@ permit (
   resource
 )
 when {
-  principal in Namespace::"my-namespace" &&
+  principal in NamespaceRole::"my-namespace/us-east1-cluster-reader/alice-us-east1-reader" &&
   resource in Namespace::"my-namespace" &&
   (!(context has resourceName) || context.spec.region == "us-east1")
 };
@@ -133,6 +140,7 @@ After creating a role, bind it to a user with a RoleBinding:
 ```bash
 curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/my-namespace/rolebindings \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "metadata": {
       "name": "alice-nodepool-viewer",
@@ -171,17 +179,17 @@ For resource-specific attributes (e.g., `region`), access them via `context.spec
 ### Condition examples
 
 **Single attribute match:**
-```
+```cedar
 context.spec.region == "us-east1"
 ```
 
 **Multiple conditions (AND):**
-```
+```cedar
 context.spec.region == "us-east1" && context.resourceName like "prod-*"
 ```
 
 **Set membership:**
-```
+```cedar
 ["us-east1", "us-west1"].contains(context.spec.region)
 ```
 
@@ -208,6 +216,7 @@ Create a role that allows reading clusters, then bind a user with a region condi
 # Create the role
 curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/team-alpha/roles \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "metadata": {
       "name": "cluster-reader",
@@ -221,6 +230,7 @@ curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/name
 # Bind to a user with a region condition
 curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/team-alpha/rolebindings \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "metadata": {
       "name": "bob-us-east1-reader",
@@ -247,6 +257,7 @@ A role that only allows viewing node pools (no cluster access):
 ```bash
 curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/team-alpha/roles \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "metadata": {
       "name": "nodepool-viewer",
@@ -263,6 +274,7 @@ curl -X POST https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/name
 ```bash
 curl -X PUT https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/my-namespace/roles/nodepool-viewer \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
   -d '{
     "metadata": {
       "name": "nodepool-viewer",
@@ -283,7 +295,8 @@ Changes take effect immediately via hot-reload. Note that updating a Role invali
 ## Deleting a User-Defined Role
 
 ```bash
-curl -X DELETE https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/my-namespace/roles/nodepool-viewer
+curl -X DELETE https://gecko-api.example.com/apis/gcp.managed.openshift.io/v1/namespaces/my-namespace/roles/nodepool-viewer \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 After deletion:
@@ -309,12 +322,21 @@ The `spec.condition` field on the RoleBinding must contain valid Cedar expressio
 
 ### 400 Bad Request: roleRef not found
 
-The `roleRef.name` in your RoleBinding must reference an existing Role in the same namespace. Check:
-- The role exists: `GET /apis/.../namespaces/{ns}/roles/{name}`.
-- The role name matches exactly (case-sensitive).
-- The role is in the same namespace as the RoleBinding.
-- `roleRef.kind` is set to `"Role"` (for namespace-scoped roles) or `"PlatformRole"` (for cluster-scoped system roles).
-- `roleRef.apiGroup` is set to `"gcp.managed.openshift.io"`.
+The `roleRef.name` in your RoleBinding must reference an existing role. Lookup rules depend on `roleRef.kind`:
+
+**For `roleRef.kind: "Role"` (namespace-scoped user-defined roles):**
+- The role must exist in the **same namespace as the RoleBinding**.
+- Check: `GET /apis/.../namespaces/{ns}/roles/{name}`.
+- The role name must match exactly (case-sensitive).
+
+**For `roleRef.kind: "PlatformRole"` (cluster-scoped system roles):**
+- The role is looked up cluster-wide, **not in the RoleBinding's namespace**.
+- Check: `GET /apis/.../platformroles.gcp.managed.openshift.io/{name}`.
+- The role name must match exactly (case-sensitive).
+- The RoleBinding can be in any namespace.
+
+In both cases:
+- `roleRef.apiGroup` must be set to `"gcp.managed.openshift.io"`.
 
 ### 400 Bad Request: permission not allowed in user-defined role
 

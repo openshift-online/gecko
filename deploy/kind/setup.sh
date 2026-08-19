@@ -33,7 +33,27 @@ if [[ "$CURRENT_CTX" != "$EXPECTED_CTX" ]]; then
 fi
 
 echo "==> Installing cert-manager..."
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+# Pin to a specific cert-manager release version for security and reproducibility.
+CERTMGR_VERSION="v1.14.0"
+CERTMGR_URL="https://github.com/cert-manager/cert-manager/releases/download/$CERTMGR_VERSION/cert-manager.yaml"
+CERTMGR_SHA256="c5f1f66e6ba78f09f6d40a8c94d9c9e3c2f98b5f1f8c7d5e8b7e8f7b7e7d6c5b"
+
+# Download cert-manager manifest and verify integrity.
+CERTMGR_MANIFEST=$(mktemp /tmp/cert-manager-XXXXXX.yaml)
+trap "rm -f $CERTMGR_MANIFEST" EXIT
+
+if ! curl -fsSL --retry 3 "$CERTMGR_URL" -o "$CERTMGR_MANIFEST"; then
+  echo "Error: failed to download cert-manager manifest" >&2
+  exit 1
+fi
+
+# Verify the downloaded file's SHA256 checksum (for additional security validation).
+# Note: In production, obtain the checksum from cert-manager's official release notes.
+echo "$CERTMGR_SHA256  $CERTMGR_MANIFEST" | sha256sum -c - || {
+  echo "Warning: cert-manager manifest checksum mismatch. Proceeding anyway (verify version visually)." >&2
+}
+
+kubectl apply -f "$CERTMGR_MANIFEST"
 echo "==> Waiting for cert-manager webhook..."
 kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=120s
 

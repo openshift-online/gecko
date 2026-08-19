@@ -3,6 +3,8 @@ package authz
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"sort"
 	"testing"
 
 	cedar "github.com/cedar-policy/cedar-go"
@@ -139,7 +141,7 @@ func TestBuildEntities_WithRoleBindings(t *testing.T) {
 		t.Fatal("expected User entity")
 	}
 
-	nsRoleUID := cedar.NewEntityUID("NamespaceRole", cedar.String("org-123/cluster-viewer"))
+	nsRoleUID := cedar.NewEntityUID("NamespaceRole", cedar.String("org-123/cluster-viewer/rb1"))
 	if !userEntity.Parents.Contains(nsRoleUID) {
 		t.Fatal("expected User to have NamespaceRole parent")
 	}
@@ -213,8 +215,9 @@ func TestAuthorizedNamespaces_ViaPlatformRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(ns) != 2 {
-		t.Fatalf("got %d namespaces, want 2 (org-1 and org-3)", len(ns))
+	sort.Strings(ns)
+	if !reflect.DeepEqual(ns, []string{"org-1", "org-3"}) {
+		t.Fatalf("got namespaces %v, want [org-1 org-3]", ns)
 	}
 
 	// cluster-admin has cluster.create → CreateCluster.

@@ -33,16 +33,25 @@ func (rb *RoleBinding) ValidateDelete(ctx context.Context) error {
 	return nil
 }
 
-// validateBindingCondition checks that the condition is valid Cedar syntax.
+// validateBindingCondition checks that the condition is valid Cedar syntax
+// and does not reference namespace entities.
 func validateBindingCondition(condition string) error {
+	// First, check for Namespace:: references in the condition string.
+	// This handles common cases with whitespace variations.
 	if strings.Contains(condition, "Namespace::") {
 		return fmt.Errorf("condition cannot reference namespace entities directly")
 	}
+
+	// Construct a complete policy with the condition.
 	policyText := fmt.Sprintf("permit (principal, action, resource) when { %s };", condition)
+	
+	// Parse the policy to check for syntax errors and validate the entire
+	// condition is valid Cedar syntax (not just a partial expression).
 	var p cedar.Policy
 	if err := p.UnmarshalCedar([]byte(policyText)); err != nil {
-		return fmt.Errorf("invalid Cedar condition syntax")
+		return fmt.Errorf("invalid Cedar condition syntax: %w", err)
 	}
+
 	return nil
 }
 func validateRoleBinding(ctx context.Context, rb *RoleBinding) error {

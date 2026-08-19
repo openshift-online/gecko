@@ -56,6 +56,25 @@ func TestMiddleware_MissingHeader(t *testing.T) {
 	}
 }
 
+func TestMiddleware_ValidHeader_PaddedBase64(t *testing.T) {
+	mw := Middleware(false)
+	handler := mw(echoHandler(t, "bob@example.com"))
+
+	// Test with padded base64.URLEncoding (includes padding '=')
+	payload := `{"email":"bob@example.com"}`
+	encoded := base64.URLEncoding.EncodeToString([]byte(payload))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Endpoint-API-UserInfo", encoded)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got status %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
 func TestMiddleware_MalformedBase64(t *testing.T) {
 	mw := Middleware(false)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

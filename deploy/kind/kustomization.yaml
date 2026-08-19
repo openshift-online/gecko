@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - ../platform-api/base
   - service-public-nodeport.yaml
+  - network-policy.yaml
 
 images:
   - name: platform-api-server

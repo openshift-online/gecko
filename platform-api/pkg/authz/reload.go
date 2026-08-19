@@ -45,12 +45,16 @@ func (a *Authorizer) StartWatching(ctx context.Context) error {
 		defer prStop()
 		defer roleStop()
 		for {
+			if prCh == nil && roleCh == nil {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return
 			case event, ok := <-prCh:
 				if !ok {
-					return
+					prCh = nil
+					continue
 				}
 				if event.Type == storage.EventBookmark {
 					continue
@@ -62,7 +66,8 @@ func (a *Authorizer) StartWatching(ctx context.Context) error {
 				a.InvalidateCache()
 			case event, ok := <-roleCh:
 				if !ok {
-					return
+					roleCh = nil
+					continue
 				}
 				if event.Type == storage.EventBookmark {
 					continue
@@ -110,9 +115,8 @@ func (a *Authorizer) invalidateFromRoleBinding(event storage.ResourceEvent) {
 	if !ok {
 		return
 	}
-	user := rb.Spec.Subject
-	if user != "" {
-		log.Printf("authz: role binding change for user %q, invalidating cache", user)
-		a.InvalidateUser(user)
+	if rb.Spec.Subject != "" {
+		log.Printf("authz: role binding %s/%s changed, invalidating subject cache", rb.Namespace, rb.Name)
+		a.InvalidateUser(rb.Spec.Subject)
 	}
 }

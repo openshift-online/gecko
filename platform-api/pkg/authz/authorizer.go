@@ -9,6 +9,7 @@ import (
 	cedar "github.com/cedar-policy/cedar-go"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // Authorizer performs Cedar-based authorization checks.
@@ -121,8 +122,19 @@ func (a *Authorizer) loadPolicies(ctx context.Context) (*cedar.PolicySet, error)
 	}
 	var platformRoles []privatev1.PlatformRole
 	for _, obj := range prItems {
+		// If already a PlatformRole, use directly. Otherwise convert from unstructured.
 		if pr, ok := obj.(*privatev1.PlatformRole); ok {
 			platformRoles = append(platformRoles, *pr)
+			continue
+		}
+		// Convert unstructured objects to typed PlatformRole
+		var pr privatev1.PlatformRole
+		if unstr, ok := obj.(runtime.Unstructured); ok {
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstr.UnstructuredContent(), &pr); err != nil {
+				log.Printf("authz: failed to convert platform role: %v", err)
+				continue
+			}
+			platformRoles = append(platformRoles, pr)
 		}
 	}
 
@@ -137,8 +149,19 @@ func (a *Authorizer) loadPolicies(ctx context.Context) (*cedar.PolicySet, error)
 	}
 	var roles []privatev1.Role
 	for _, obj := range roleItems {
+		// If already a Role, use directly. Otherwise convert from unstructured.
 		if r, ok := obj.(*privatev1.Role); ok {
 			roles = append(roles, *r)
+			continue
+		}
+		// Convert unstructured objects to typed Role
+		var r privatev1.Role
+		if unstr, ok := obj.(runtime.Unstructured); ok {
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstr.UnstructuredContent(), &r); err != nil {
+				log.Printf("authz: failed to convert role: %v", err)
+				continue
+			}
+			roles = append(roles, r)
 		}
 	}
 
@@ -153,8 +176,19 @@ func (a *Authorizer) loadPolicies(ctx context.Context) (*cedar.PolicySet, error)
 	}
 	var bindings []privatev1.RoleBinding
 	for _, obj := range rbItems {
+		// If already a RoleBinding, use directly. Otherwise convert from unstructured.
 		if rb, ok := obj.(*privatev1.RoleBinding); ok {
 			bindings = append(bindings, *rb)
+			continue
+		}
+		// Convert unstructured objects to typed RoleBinding
+		var rb privatev1.RoleBinding
+		if unstr, ok := obj.(runtime.Unstructured); ok {
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(unstr.UnstructuredContent(), &rb); err != nil {
+				log.Printf("authz: failed to convert role binding: %v", err)
+				continue
+			}
+			bindings = append(bindings, rb)
 		}
 	}
 

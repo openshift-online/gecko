@@ -258,8 +258,12 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	// Start policy hot-reload watchers.
-	go authorizer.StartWatching(ctx)
+	// Start policy hot-reload watchers synchronously.
+	// Fail startup if initialization fails instead of serving with stale/missing policies.
+	if err := authorizer.StartWatching(ctx); err != nil {
+		cancel()
+		log.Fatalf("Failed to start authorization policy watcher: %v", err)
+	}
 
 	// Start server in goroutine
 	go func() {
