@@ -17,6 +17,18 @@ var (
 	//go:embed .schemas/nodepool_schema.yaml
 	NodePoolSchemaYAML string
 
+	// PlatformRoleSchemaYAML contains the OpenAPI v3 schema for PlatformRole.
+	//go:embed .schemas/platformrole_schema.yaml
+	PlatformRoleSchemaYAML string
+
+	// RoleBindingSchemaYAML contains the OpenAPI v3 schema for RoleBinding.
+	//go:embed .schemas/rolebinding_schema.yaml
+	RoleBindingSchemaYAML string
+
+	// RoleSchemaYAML contains the OpenAPI v3 schema for Role.
+	//go:embed .schemas/role_schema.yaml
+	RoleSchemaYAML string
+
 )
 
 // ClusterResourceInfo describes the Cluster resource type.
@@ -37,11 +49,41 @@ var NodePoolResourceInfo = types.ResourceInfo{
 	SchemaYAML: NodePoolSchemaYAML,
 }
 
+// PlatformRoleResourceInfo describes the PlatformRole resource type.
+var PlatformRoleResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("PlatformRole"),
+	Plural:     "platformroles",
+	Singular:   "platformrole",
+	Namespaced: false,
+	SchemaYAML: PlatformRoleSchemaYAML,
+}
+
+// RoleBindingResourceInfo describes the RoleBinding resource type.
+var RoleBindingResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("RoleBinding"),
+	Plural:     "rolebindings",
+	Singular:   "rolebinding",
+	Namespaced: true,
+	SchemaYAML: RoleBindingSchemaYAML,
+}
+
+// RoleResourceInfo describes the Role resource type.
+var RoleResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("Role"),
+	Plural:     "roles",
+	Singular:   "role",
+	Namespaced: true,
+	SchemaYAML: RoleSchemaYAML,
+}
+
 // GetResourceInfos returns ResourceInfo definitions for all types in this package.
 // This can be used to configure an API server with these resources.
 func GetResourceInfos() []types.ResourceInfo {
 	return []types.ResourceInfo{
 		ClusterResourceInfo,
 		NodePoolResourceInfo,
+		PlatformRoleResourceInfo,
+		RoleBindingResourceInfo,
+		RoleResourceInfo,
 	}
 }
