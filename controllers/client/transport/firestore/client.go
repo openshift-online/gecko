@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"cloud.google.com/go/firestore"
 	"google.golang.org/api/option"
@@ -50,6 +51,11 @@ type Client struct {
 	log   logger.Logger
 	// dialOpts are extra grpc/firestore client options, used to inject emulator settings in tests.
 	dialOpts []option.ClientOption
+	// writeTimestamps caches Firestore write timestamps keyed by clusterID.
+	// Used to detect stale status by comparing against ObservedDesireUpdateTime.
+	// Entries are never explicitly cleaned up (bounded by number of active clusters,
+	// cleared on process restart). Future enhancement: add TTL or delete on cluster deletion.
+	writeTimestamps sync.Map // key: clusterID (string), value: map[docID]time.Time
 }
 
 // Ensure Client implements transport.Client.
@@ -116,6 +122,7 @@ func (c *Client) Apply(ctx context.Context, targetCluster, clusterID string, man
 
 	batch := mc.specs.BulkWriter(ctx)
 	var jobs []*firestore.BulkWriterJob
+	var docIDs []string
 
 	for _, raw := range manifests {
 		if len(raw) == 0 {
@@ -141,6 +148,7 @@ func (c *Client) Apply(ctx context.Context, targetCluster, clusterID string, man
 			return nil, fmt.Errorf("firestore transport: Apply %s/%s set apply desire: %w", targetCluster, clusterID, err)
 		}
 		jobs = append(jobs, job)
+		docIDs = append(docIDs, applyID)
 
 		// Write ReadDesire
 		readID, readData := buildReadDesireDoc(clusterID, targetCluster, ref)
@@ -150,20 +158,91 @@ func (c *Client) Apply(ctx context.Context, targetCluster, clusterID string, man
 			return nil, fmt.Errorf("firestore transport: Apply %s/%s set read desire: %w", targetCluster, clusterID, err)
 		}
 		jobs = append(jobs, job)
+		docIDs = append(docIDs, readID)
 	}
 
 	batch.Flush()
 
-	// Check job results for write errors.
-	for _, job := range jobs {
-		if _, err := job.Results(); err != nil {
+	// Capture write timestamps for stale detection.
+	// jobs and docIDs are built in lockstep (same loop appends to both), so len(jobs) == len(docIDs).
+	timestamps := make(map[string]time.Time, len(jobs))
+	for i, job := range jobs {
+		result, err := job.Results()
+		if err != nil {
 			return nil, fmt.Errorf("firestore transport: Apply %s/%s write error: %w", targetCluster, clusterID, err)
 		}
+		timestamps[docIDs[i]] = result.UpdateTime
 	}
+	c.writeTimestamps.Store(clusterID, timestamps)
 
 	c.log.Infof(ctx, "firestore transport: applied %d manifests for %s/%s", len(manifests), targetCluster, clusterID)
 
 	return c.GetStatus(ctx, targetCluster, clusterID)
+}
+
+// detectStaleStatus returns true if any desire has an ObservedDesireUpdateTime
+// that is older than (or missing) the corresponding write timestamp.
+// This indicates kube-applier-gcp has not yet processed the latest spec.
+//
+// Timestamp comparison assumes server-assigned Firestore timestamps (no clock skew).
+// Both writeTime (from WriteResult.UpdateTime) and ObservedDesireUpdateTime (set by
+// kube-applier-gcp) use Firestore server time, ensuring consistent comparison.
+//
+// Relies on alignment: specsSnaps[i], statusSnaps[i] (from GetAll), and desires[i]
+// all correspond to the same document ID. Firestore Client.GetAll preserves input
+// order by placing each result at the matching index via an internal docIndices map.
+// The desires slice is built by looping statusSnaps in order, always appending
+// (either a pending or full desire), so desires[i] aligns with specsSnaps[i].
+func detectStaleStatus(
+	clusterID string,
+	writeTimestamps sync.Map,
+	specsApplySnaps []*firestore.DocumentSnapshot,
+	applyDesires []kubeapplier.ApplyDesire,
+	specsReadSnaps []*firestore.DocumentSnapshot,
+	readDesires []kubeapplier.ReadDesire,
+) bool {
+	v, ok := writeTimestamps.Load(clusterID)
+	if !ok {
+		// No write timestamps recorded for this cluster — cannot detect staleness.
+		return false
+	}
+	// Only Apply() writes to writeTimestamps, always as map[string]time.Time.
+	// Type assertion failure indicates serious programming error.
+	timestamps := v.(map[string]time.Time)
+
+	// Check ApplyDesires
+	for i, snap := range specsApplySnaps {
+		docID := snap.Ref.ID
+		writeTime, hasWriteTime := timestamps[docID]
+		if !hasWriteTime {
+			continue
+		}
+		if i >= len(applyDesires) {
+			panic(fmt.Sprintf("firestore transport: detectStaleStatus applyDesires index %d out of range (len=%d)", i, len(applyDesires)))
+		}
+		observed := applyDesires[i].Status.ObservedDesireUpdateTime
+		if observed.IsZero() || observed.Before(writeTime) {
+			return true
+		}
+	}
+
+	// Check ReadDesires
+	for i, snap := range specsReadSnaps {
+		docID := snap.Ref.ID
+		writeTime, hasWriteTime := timestamps[docID]
+		if !hasWriteTime {
+			continue
+		}
+		if i >= len(readDesires) {
+			panic(fmt.Sprintf("firestore transport: detectStaleStatus readDesires index %d out of range (len=%d)", i, len(readDesires)))
+		}
+		observed := readDesires[i].Status.ObservedDesireUpdateTime
+		if observed.IsZero() || observed.Before(writeTime) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // GetStatus looks up document IDs from the specs DB by clusterID, then fetches
@@ -223,6 +302,7 @@ func (c *Client) GetStatus(ctx context.Context, targetCluster, clusterID string)
 			ad.Spec = specsAD.Spec
 			applyDesires = append(applyDesires, ad)
 		}
+		// GetAll preserves order; loop always appends → len(applyDesires) == len(specsApplySnaps).
 	}
 
 	readDesires := make([]kubeapplier.ReadDesire, 0, len(specsReadSnaps))
@@ -261,6 +341,7 @@ func (c *Client) GetStatus(ctx context.Context, targetCluster, clusterID string)
 			}
 			readDesires = append(readDesires, rd)
 		}
+		// GetAll preserves order; loop always appends → len(readDesires) == len(specsReadSnaps).
 	}
 
 	resourceStatuses, err := extractResourceStatuses(readDesires)
@@ -268,9 +349,15 @@ func (c *Client) GetStatus(ctx context.Context, targetCluster, clusterID string)
 		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s: %w", targetCluster, clusterID, err)
 	}
 
+	// Detect stale status by comparing ObservedDesireUpdateTime against write timestamps.
+	// Firestore GetAll preserves input order, so specsSnaps[i] corresponds to statusSnaps[i]
+	// and desires[i] (built by looping statusSnaps in order).
+	stale := detectStaleStatus(clusterID, c.writeTimestamps, specsApplySnaps, applyDesires, specsReadSnaps, readDesires)
+
 	return &transport.Status{
 		Conditions:       aggregateConditions(applyDesires),
 		ResourceStatuses: resourceStatuses,
+		Stale:            stale,
 	}, nil
 }
 

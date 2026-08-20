@@ -409,3 +409,79 @@ func TestIntegration_Delete_ChunksLargeBatches(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, deleteSnaps, resourceCount, "one DeleteDesire per resource")
 }
+
+// TestStaleDetection verifies that Status.Stale is true when kube-applier-gcp
+// has not yet processed the latest ApplyDesire or ReadDesire.
+func TestStaleDetection(t *testing.T) {
+	ctx := context.Background()
+	client := newTestClient(t)
+	defer client.Close()
+
+	clusterID := "stale-test-cluster"
+	manifest := []byte(`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"test-cm","namespace":"default"},"data":{"key":"value"}}`)
+
+	// Clean up any leftover documents from previous runs.
+	cleanupTestData(t, clusterID)
+
+	// Step 1: Apply writes new desires to specs DB and returns status.
+	// Since kube-applier-gcp (emulator) hasn't processed them yet,
+	// ObservedDesireUpdateTime will be zero. Status.Stale should be true.
+	status, err := client.Apply(ctx, testMCName, clusterID, [][]byte{manifest})
+	require.NoError(t, err)
+	assert.True(t, status.Stale, "Status should be stale immediately after Apply (kube-applier-gcp hasn't processed yet)")
+
+	// Step 2: Simulate kube-applier-gcp processing by manually updating
+	// ObservedDesireUpdateTime on status documents to match (or exceed) write timestamps.
+	// This is normally done by kube-applier-gcp, but in the emulator we do it manually.
+	opts := emulatorOpts(t)
+	statusClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "status", opts...)
+	require.NoError(t, err)
+	defer statusClient.Close()
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	defer specsClient.Close()
+
+	// Query all ApplyDesire docs for this cluster from specs DB to get their IDs.
+	applySnaps, err := specsClient.Collection("applydesires").
+		Where("spec.clusterID", "==", clusterID).
+		Documents(ctx).GetAll()
+	require.NoError(t, err)
+
+	// For each ApplyDesire, create/update status document with ObservedDesireUpdateTime = now.
+	// This simulates kube-applier-gcp having processed the desires.
+	now := time.Now()
+	for _, snap := range applySnaps {
+		statusRef := statusClient.Collection("applydesires").Doc(snap.Ref.ID)
+		_, err := statusRef.Set(ctx, map[string]any{
+			"status": map[string]any{
+				"observedDesireUpdateTime": now,
+				"conditions": []map[string]any{
+					{"type": "Successful", "status": "True", "reason": "Applied"},
+				},
+			},
+		}, firestore.MergeAll)
+		require.NoError(t, err)
+	}
+
+	// Do the same for ReadDesires.
+	readSnaps, err := specsClient.Collection("readdesires").
+		Where("spec.clusterID", "==", clusterID).
+		Documents(ctx).GetAll()
+	require.NoError(t, err)
+
+	for _, snap := range readSnaps {
+		statusRef := statusClient.Collection("readdesires").Doc(snap.Ref.ID)
+		_, err := statusRef.Set(ctx, map[string]any{
+			"status": map[string]any{
+				"observedDesireUpdateTime": now,
+			},
+		}, firestore.MergeAll)
+		require.NoError(t, err)
+	}
+
+	// Step 3: GetStatus should now return Stale=false since ObservedDesireUpdateTime >= write timestamp.
+	status, err = client.GetStatus(ctx, testMCName, clusterID)
+	require.NoError(t, err)
+	assert.False(t, status.Stale, "Status should not be stale after kube-applier-gcp processes desires")
+}

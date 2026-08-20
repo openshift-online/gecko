@@ -933,3 +933,28 @@ func TestReconcile_Deletion_RemoveFinalizerError(t *testing.T) {
 	require.Len(t, tr.CleanupDeleteDesiresCalls, 1, "cleanup should have been called before finalizer removal failed")
 	require.True(t, storeClient.updateCalled)
 }
+
+// TestReconcile_StaleStatus verifies that when transport returns Stale=true,
+// the controller skips writing conditions and requeues with requeuePending.
+func TestReconcile_StaleStatus(t *testing.T) {
+	np := testNodePool("4.16.0")
+	cluster := testCluster(true, true)
+
+	tr := mock.New()
+	// Configure transport to return stale status.
+	tr.StatusOverrides["mc-us-c1/np-test"] = &transport.Status{
+		Stale: true,
+		// Conditions are present but should be ignored when Stale=true.
+		Conditions: []metav1.Condition{
+			{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"},
+		},
+	}
+
+	r, storeClient := buildReconciler(t, np, cluster, tr, nil, nil, nil)
+
+	result, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-test"))
+	require.NoError(t, err)
+	require.Equal(t, requeuePending, result.RequeueAfter, "should requeue with requeuePending when status is stale")
+	require.Len(t, tr.ApplyCalls, 1, "Apply should still be called")
+	require.False(t, storeClient.statusWriter.called, "Status.Update should not be called when status is stale")
+}

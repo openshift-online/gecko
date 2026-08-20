@@ -20,6 +20,10 @@ type Status struct {
 	// ResourceStatuses contains statusFeedback values keyed by resource identity then by field name.
 	// Key format: "{group}/{version}/{resource}/{namespace}/{name}"
 	ResourceStatuses map[string]map[string]string
+	// Stale is true when one or more desires have an ObservedDesireUpdateTime
+	// that is older than the last write timestamp, meaning kube-applier-gcp
+	// has not yet processed the latest spec.
+	Stale bool
 }
 
 // DeleteStatus holds the aggregated status of delete operations.
