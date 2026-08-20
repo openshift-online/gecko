@@ -23,10 +23,17 @@ type Server struct {
 	publicRouter     chi.Router
 	publicServer     *http.Server
 	aggregatedServer *aggregated.AggregatedServer
+	privateRegistry  *ResourceRegistry
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	options          Options
 	logger           logr.Logger
+}
+
+// PrivateRegistry returns the private ResourceRegistry built during New().
+// Callers can use this to look up stores by GroupKind.
+func (s *Server) PrivateRegistry() *ResourceRegistry {
+	return s.privateRegistry
 }
 
 // PrivateAPIOptions holds configuration for the private API server.
@@ -166,6 +173,7 @@ func New(opts Options) (*Server, error) {
 				return nil, fmt.Errorf("failed to register private resource %s: %w", res.Plural, err)
 			}
 		}
+		server.privateRegistry = privateRegistry
 
 		publicRegistry := NewResourceRegistry(opts.Public.Scheme, WithStorageFactory(sharedFactory), WithLogger(logger))
 		for _, res := range opts.Public.Resources {

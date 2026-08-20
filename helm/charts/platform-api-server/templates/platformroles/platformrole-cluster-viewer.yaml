@@ -1,0 +1,16 @@
+{{- if .Values.platformRoles.enabled }}
+apiVersion: gcp.managed.openshift.io/v1
+kind: PlatformRole
+metadata:
+  name: cluster-viewer
+  labels:
+    {{- include "platform-api-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: platform-role
+spec:
+  permissions:
+    - cluster.list
+    - cluster.get
+    - nodepool.list
+    - nodepool.get
+  system: true
+{{- end }}

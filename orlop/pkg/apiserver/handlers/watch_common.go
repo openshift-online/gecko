@@ -168,7 +168,13 @@ func (ws *watchStreamer) checkAndSendCatchupBookmark(eventRV string, allowBookma
 // Allows converting/transforming objects (e.g., private to public conversion).
 type objectTransformer func(client.Object) (interface{}, error)
 
-// streamWatch runs the watch event loop with optional object transformation.
+// streamWatch runs the watch event loop with optional object transformation
+// and per-item filtering.
+//
+// The itemFilter parameter, when non-nil, is applied to each event object before
+// sending it to the client. This ensures that watch events are subject to the
+// same authorization filtering as list responses, preventing a conditional
+// RoleBinding from leaking objects through the watch stream.
 func streamWatch(
 	ctx context.Context,
 	streamer *watchStreamer,
@@ -177,6 +183,7 @@ func streamWatch(
 	listOpts storage.ListOptions,
 	store storage.ResourceStore,
 	transformer objectTransformer,
+	itemFilter ItemFilterFunc,
 ) {
 	// Setup periodic bookmarks
 	var bookmarkTicker *time.Ticker
@@ -195,6 +202,11 @@ func streamWatch(
 			for _, item := range items {
 				obj, ok := item.(client.Object)
 				if !ok {
+					continue
+				}
+
+				// Apply item filter (e.g., condition-based authorization).
+				if itemFilter != nil && !itemFilter(ctx, obj) {
 					continue
 				}
 
@@ -252,6 +264,48 @@ func streamWatch(
 			// Update last resource version
 			streamer.lastResourceVersion = event.ResourceVersion
 			obj := event.Object
+
+			// Apply item filter (e.g., condition-based authorization).
+			// Bookmark events have nil objects and are always forwarded.
+			//
+			// For MODIFIED events, handle visibility transitions:
+			// - If the previous object was visible but the new one is not,
+			//   emit a synthetic DELETED so the client removes it from cache.
+			// - If the previous object was not visible but the new one is,
+			//   emit ADDED so the client discovers the newly-visible object.
+			if itemFilter != nil && obj != nil {
+				nowVisible := itemFilter(ctx, obj)
+				if !nowVisible {
+					// Check if the previous version was visible (visibility transition).
+					if event.Type == storage.EventModified && event.PreviousObject != nil {
+						wasVisible := itemFilter(ctx, event.PreviousObject)
+						if wasVisible {
+							// Object transitioned from visible to hidden: emit synthetic DELETED.
+							var sendObj interface{} = obj
+							if transformer != nil {
+								if transformed, err := transformer(obj); err == nil {
+									sendObj = transformed
+								}
+							}
+							if err := streamer.sendEvent(storage.EventDeleted, sendObj); err != nil {
+								return
+							}
+						}
+					}
+					// Advance catchup bookmark even for filtered events.
+					if err := streamer.checkAndSendCatchupBookmark(event.ResourceVersion, config.allowWatchBookmarks); err != nil {
+						return
+					}
+					continue
+				}
+				// If the object is now visible but wasn't before, send ADDED.
+				if event.Type == storage.EventModified && event.PreviousObject != nil {
+					wasVisible := itemFilter(ctx, event.PreviousObject)
+					if !wasVisible {
+						event.Type = storage.EventAdded
+					}
+				}
+			}
 
 			var sendObj interface{} = obj
 			if transformer != nil {

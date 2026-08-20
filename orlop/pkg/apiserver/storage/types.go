@@ -26,4 +26,11 @@ type ResourceEvent struct {
 	Object             client.Object
 	ResourceVersion    string
 	ContextFilterValue string // set by stores with context filtering configured
+
+	// PreviousObject holds the state of the resource before the change.
+	// It is populated for EventModified events so that consumers can detect
+	// field changes (e.g., a RoleBinding subject change) and invalidate
+	// both the old and new values. It is nil for EventAdded, EventDeleted,
+	// and EventBookmark events.
+	PreviousObject client.Object
 }

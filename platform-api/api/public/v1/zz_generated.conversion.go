@@ -225,6 +225,36 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}); err != nil {
 		return err
 	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.PlatformRole)(nil), (*PlatformRole)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_PlatformRole_PrivateToPublic(a.(*privatev1.PlatformRole), b.(*PlatformRole), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*PlatformRole)(nil), (*privatev1.PlatformRole)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_PlatformRole_PublicToPrivate(a.(*PlatformRole), b.(*privatev1.PlatformRole), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.PlatformRoleList)(nil), (*PlatformRoleList)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_PlatformRoleList_PrivateToPublic(a.(*privatev1.PlatformRoleList), b.(*PlatformRoleList), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*PlatformRoleList)(nil), (*privatev1.PlatformRoleList)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_PlatformRoleList_PublicToPrivate(a.(*PlatformRoleList), b.(*privatev1.PlatformRoleList), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.PlatformRoleSpec)(nil), (*PlatformRoleSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_PlatformRoleSpec_PrivateToPublic(a.(*privatev1.PlatformRoleSpec), b.(*PlatformRoleSpec), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*PlatformRoleSpec)(nil), (*privatev1.PlatformRoleSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_PlatformRoleSpec_PublicToPrivate(a.(*PlatformRoleSpec), b.(*privatev1.PlatformRoleSpec), scope)
+	}); err != nil {
+		return err
+	}
 	if err := s.AddGeneratedConversionFunc((*privatev1.ReleaseSpec)(nil), (*ReleaseSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_ReleaseSpec_PrivateToPublic(a.(*privatev1.ReleaseSpec), b.(*ReleaseSpec), scope)
 	}); err != nil {
@@ -232,6 +262,76 @@ func RegisterConversions(s *runtime.Scheme) error {
 	}
 	if err := s.AddGeneratedConversionFunc((*ReleaseSpec)(nil), (*privatev1.ReleaseSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
 		return Convert_ReleaseSpec_PublicToPrivate(a.(*ReleaseSpec), b.(*privatev1.ReleaseSpec), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.Role)(nil), (*Role)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_Role_PrivateToPublic(a.(*privatev1.Role), b.(*Role), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*Role)(nil), (*privatev1.Role)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_Role_PublicToPrivate(a.(*Role), b.(*privatev1.Role), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.RoleBinding)(nil), (*RoleBinding)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleBinding_PrivateToPublic(a.(*privatev1.RoleBinding), b.(*RoleBinding), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*RoleBinding)(nil), (*privatev1.RoleBinding)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleBinding_PublicToPrivate(a.(*RoleBinding), b.(*privatev1.RoleBinding), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.RoleBindingList)(nil), (*RoleBindingList)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleBindingList_PrivateToPublic(a.(*privatev1.RoleBindingList), b.(*RoleBindingList), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*RoleBindingList)(nil), (*privatev1.RoleBindingList)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleBindingList_PublicToPrivate(a.(*RoleBindingList), b.(*privatev1.RoleBindingList), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.RoleBindingSpec)(nil), (*RoleBindingSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleBindingSpec_PrivateToPublic(a.(*privatev1.RoleBindingSpec), b.(*RoleBindingSpec), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*RoleBindingSpec)(nil), (*privatev1.RoleBindingSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleBindingSpec_PublicToPrivate(a.(*RoleBindingSpec), b.(*privatev1.RoleBindingSpec), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.RoleList)(nil), (*RoleList)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleList_PrivateToPublic(a.(*privatev1.RoleList), b.(*RoleList), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*RoleList)(nil), (*privatev1.RoleList)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleList_PublicToPrivate(a.(*RoleList), b.(*privatev1.RoleList), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.RoleRef)(nil), (*RoleRef)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleRef_PrivateToPublic(a.(*privatev1.RoleRef), b.(*RoleRef), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*RoleRef)(nil), (*privatev1.RoleRef)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleRef_PublicToPrivate(a.(*RoleRef), b.(*privatev1.RoleRef), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*privatev1.RoleSpec)(nil), (*RoleSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleSpec_PrivateToPublic(a.(*privatev1.RoleSpec), b.(*RoleSpec), scope)
+	}); err != nil {
+		return err
+	}
+	if err := s.AddGeneratedConversionFunc((*RoleSpec)(nil), (*privatev1.RoleSpec)(nil), func(a, b interface{}, scope conversion.Scope) error {
+		return Convert_RoleSpec_PublicToPrivate(a.(*RoleSpec), b.(*privatev1.RoleSpec), scope)
 	}); err != nil {
 		return err
 	}
@@ -762,6 +862,84 @@ func Convert_NodePoolStatus_PublicToPrivate(in *NodePoolStatus, out *privatev1.N
 	return autoConvert_NodePoolStatus_PublicToPrivate(in, out, s)
 }
 
+func autoConvert_PlatformRole_PrivateToPublic(in *privatev1.PlatformRole, out *PlatformRole, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_PlatformRole_PrivateToPublic is an autogenerated conversion function.
+func Convert_PlatformRole_PrivateToPublic(in *privatev1.PlatformRole, out *PlatformRole, s conversion.Scope) error {
+	return autoConvert_PlatformRole_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_PlatformRole_PublicToPrivate(in *PlatformRole, out *privatev1.PlatformRole, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_PlatformRole_PublicToPrivate is an autogenerated conversion function.
+func Convert_PlatformRole_PublicToPrivate(in *PlatformRole, out *privatev1.PlatformRole, s conversion.Scope) error {
+	return autoConvert_PlatformRole_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_PlatformRoleList_PrivateToPublic(in *privatev1.PlatformRoleList, out *PlatformRoleList, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_PlatformRoleList_PrivateToPublic is an autogenerated conversion function.
+func Convert_PlatformRoleList_PrivateToPublic(in *privatev1.PlatformRoleList, out *PlatformRoleList, s conversion.Scope) error {
+	return autoConvert_PlatformRoleList_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_PlatformRoleList_PublicToPrivate(in *PlatformRoleList, out *privatev1.PlatformRoleList, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_PlatformRoleList_PublicToPrivate is an autogenerated conversion function.
+func Convert_PlatformRoleList_PublicToPrivate(in *PlatformRoleList, out *privatev1.PlatformRoleList, s conversion.Scope) error {
+	return autoConvert_PlatformRoleList_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_PlatformRoleSpec_PrivateToPublic(in *privatev1.PlatformRoleSpec, out *PlatformRoleSpec, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_PlatformRoleSpec_PrivateToPublic is an autogenerated conversion function.
+func Convert_PlatformRoleSpec_PrivateToPublic(in *privatev1.PlatformRoleSpec, out *PlatformRoleSpec, s conversion.Scope) error {
+	return autoConvert_PlatformRoleSpec_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_PlatformRoleSpec_PublicToPrivate(in *PlatformRoleSpec, out *privatev1.PlatformRoleSpec, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_PlatformRoleSpec_PublicToPrivate is an autogenerated conversion function.
+func Convert_PlatformRoleSpec_PublicToPrivate(in *PlatformRoleSpec, out *privatev1.PlatformRoleSpec, s conversion.Scope) error {
+	return autoConvert_PlatformRoleSpec_PublicToPrivate(in, out, s)
+}
+
 func autoConvert_ReleaseSpec_PrivateToPublic(in *privatev1.ReleaseSpec, out *ReleaseSpec, s conversion.Scope) error {
 	data, err := json.Marshal(in)
 	if err != nil {
@@ -786,6 +964,188 @@ func autoConvert_ReleaseSpec_PublicToPrivate(in *ReleaseSpec, out *privatev1.Rel
 // Convert_ReleaseSpec_PublicToPrivate is an autogenerated conversion function.
 func Convert_ReleaseSpec_PublicToPrivate(in *ReleaseSpec, out *privatev1.ReleaseSpec, s conversion.Scope) error {
 	return autoConvert_ReleaseSpec_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_Role_PrivateToPublic(in *privatev1.Role, out *Role, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_Role_PrivateToPublic is an autogenerated conversion function.
+func Convert_Role_PrivateToPublic(in *privatev1.Role, out *Role, s conversion.Scope) error {
+	return autoConvert_Role_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_Role_PublicToPrivate(in *Role, out *privatev1.Role, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_Role_PublicToPrivate is an autogenerated conversion function.
+func Convert_Role_PublicToPrivate(in *Role, out *privatev1.Role, s conversion.Scope) error {
+	return autoConvert_Role_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_RoleBinding_PrivateToPublic(in *privatev1.RoleBinding, out *RoleBinding, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleBinding_PrivateToPublic is an autogenerated conversion function.
+func Convert_RoleBinding_PrivateToPublic(in *privatev1.RoleBinding, out *RoleBinding, s conversion.Scope) error {
+	return autoConvert_RoleBinding_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_RoleBinding_PublicToPrivate(in *RoleBinding, out *privatev1.RoleBinding, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleBinding_PublicToPrivate is an autogenerated conversion function.
+func Convert_RoleBinding_PublicToPrivate(in *RoleBinding, out *privatev1.RoleBinding, s conversion.Scope) error {
+	return autoConvert_RoleBinding_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_RoleBindingList_PrivateToPublic(in *privatev1.RoleBindingList, out *RoleBindingList, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleBindingList_PrivateToPublic is an autogenerated conversion function.
+func Convert_RoleBindingList_PrivateToPublic(in *privatev1.RoleBindingList, out *RoleBindingList, s conversion.Scope) error {
+	return autoConvert_RoleBindingList_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_RoleBindingList_PublicToPrivate(in *RoleBindingList, out *privatev1.RoleBindingList, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleBindingList_PublicToPrivate is an autogenerated conversion function.
+func Convert_RoleBindingList_PublicToPrivate(in *RoleBindingList, out *privatev1.RoleBindingList, s conversion.Scope) error {
+	return autoConvert_RoleBindingList_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_RoleBindingSpec_PrivateToPublic(in *privatev1.RoleBindingSpec, out *RoleBindingSpec, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleBindingSpec_PrivateToPublic is an autogenerated conversion function.
+func Convert_RoleBindingSpec_PrivateToPublic(in *privatev1.RoleBindingSpec, out *RoleBindingSpec, s conversion.Scope) error {
+	return autoConvert_RoleBindingSpec_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_RoleBindingSpec_PublicToPrivate(in *RoleBindingSpec, out *privatev1.RoleBindingSpec, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleBindingSpec_PublicToPrivate is an autogenerated conversion function.
+func Convert_RoleBindingSpec_PublicToPrivate(in *RoleBindingSpec, out *privatev1.RoleBindingSpec, s conversion.Scope) error {
+	return autoConvert_RoleBindingSpec_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_RoleList_PrivateToPublic(in *privatev1.RoleList, out *RoleList, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleList_PrivateToPublic is an autogenerated conversion function.
+func Convert_RoleList_PrivateToPublic(in *privatev1.RoleList, out *RoleList, s conversion.Scope) error {
+	return autoConvert_RoleList_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_RoleList_PublicToPrivate(in *RoleList, out *privatev1.RoleList, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleList_PublicToPrivate is an autogenerated conversion function.
+func Convert_RoleList_PublicToPrivate(in *RoleList, out *privatev1.RoleList, s conversion.Scope) error {
+	return autoConvert_RoleList_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_RoleRef_PrivateToPublic(in *privatev1.RoleRef, out *RoleRef, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleRef_PrivateToPublic is an autogenerated conversion function.
+func Convert_RoleRef_PrivateToPublic(in *privatev1.RoleRef, out *RoleRef, s conversion.Scope) error {
+	return autoConvert_RoleRef_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_RoleRef_PublicToPrivate(in *RoleRef, out *privatev1.RoleRef, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleRef_PublicToPrivate is an autogenerated conversion function.
+func Convert_RoleRef_PublicToPrivate(in *RoleRef, out *privatev1.RoleRef, s conversion.Scope) error {
+	return autoConvert_RoleRef_PublicToPrivate(in, out, s)
+}
+
+func autoConvert_RoleSpec_PrivateToPublic(in *privatev1.RoleSpec, out *RoleSpec, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleSpec_PrivateToPublic is an autogenerated conversion function.
+func Convert_RoleSpec_PrivateToPublic(in *privatev1.RoleSpec, out *RoleSpec, s conversion.Scope) error {
+	return autoConvert_RoleSpec_PrivateToPublic(in, out, s)
+}
+
+func autoConvert_RoleSpec_PublicToPrivate(in *RoleSpec, out *privatev1.RoleSpec, s conversion.Scope) error {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, out)
+}
+
+// Convert_RoleSpec_PublicToPrivate is an autogenerated conversion function.
+func Convert_RoleSpec_PublicToPrivate(in *RoleSpec, out *privatev1.RoleSpec, s conversion.Scope) error {
+	return autoConvert_RoleSpec_PublicToPrivate(in, out, s)
 }
 
 func autoConvert_ServiceAccountsRef_PrivateToPublic(in *privatev1.ServiceAccountsRef, out *ServiceAccountsRef, s conversion.Scope) error {

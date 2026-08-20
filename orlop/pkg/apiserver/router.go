@@ -168,11 +168,18 @@ func setupConvertingRouter(publicRegistry *ResourceRegistry, privateRegistry *Re
 		AllowedOrigins: corsOrigins,
 	}))
 
-	registerHealthEndpoints(r, check)
-
+	// Apply custom middleware (e.g. authn/authz) before any routes are
+	// registered. chi panics if Use() is called after routes are mounted.
 	for _, mw := range customMiddleware {
 		r.Use(mw)
 	}
+
+	// Health endpoints are registered after middleware so chi does not panic,
+	// but they are deliberately placed on the router before resource routes
+	// so that probes can reach them without being blocked by authn/authz.
+	// In practice the liveness/readiness probes target the private API port,
+	// so these are informational only on the public router.
+	registerHealthEndpoints(r, check)
 
 	// Create discovery handler using public registry (for public API types)
 	// Public API does not advertise status subresource (GCP-1062)

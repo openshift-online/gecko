@@ -46,7 +46,7 @@ func (h *ResourceHandler) handleWatch(w http.ResponseWriter, r *http.Request, op
 		}
 	}
 
-	streamWatch(ctx, streamer, eventCh, config, opts, h.store, transformer)
+	streamWatch(ctx, streamer, eventCh, config, opts, h.store, transformer, nil)
 }
 
 

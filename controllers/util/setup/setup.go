@@ -3,6 +3,7 @@ package setup
 import (
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -30,11 +31,14 @@ func (rf *RootFlags) NewLogger(component string) (logger.Logger, error) {
 	})
 }
 
-// NewScheme creates a runtime.Scheme with platform-api types registered.
+// NewScheme creates a runtime.Scheme with platform-api types and core types registered.
 func NewScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	if err := privatev1.AddToScheme(scheme); err != nil {
 		panic(fmt.Sprintf("failed to register platform-api types: %v", err))
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		panic(fmt.Sprintf("failed to register core types: %v", err))
 	}
 	return scheme
 }

@@ -610,9 +610,15 @@ func (s *PostgresStore) Watch(ctx context.Context, opts storage.ListOptions, res
 					continue
 				}
 
-				// Filter by namespace
-				if opts.Namespace != "" && clientObj.GetNamespace() != opts.Namespace {
-					continue
+				// Filter by namespace: singular takes precedence over plural
+				if opts.Namespace != "" {
+					if clientObj.GetNamespace() != opts.Namespace {
+						continue
+					}
+				} else if len(opts.Namespaces) > 0 {
+					if !containsString(opts.Namespaces, clientObj.GetNamespace()) {
+						continue
+					}
 				}
 
 				// Filter by label selector
@@ -736,6 +742,9 @@ func (s *PostgresStore) buildListQuery(opts storage.ListOptions, filterValue str
 	// Build query using fluent API
 	qb := NewQueryBuilder(s.tableName, "namespace", "name", "resource_version", "data")
 	qb.WhereNamespace(opts.Namespace)
+	if opts.Namespace == "" {
+		qb.WhereNamespaces(opts.Namespaces)
+	}
 	qb.WhereLabelSelector(labelSelector)
 	qb.WhereShardSelector(opts.ShardSelector)
 	qb.WhereFieldFilters(opts.FieldFilters)
@@ -755,4 +764,14 @@ func (s *PostgresStore) buildListQuery(opts storage.ListOptions, filterValue str
 
 	query, args := qb.Build()
 	return query, args, nil
+}
+
+// containsString checks if a string is present in a slice.
+func containsString(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

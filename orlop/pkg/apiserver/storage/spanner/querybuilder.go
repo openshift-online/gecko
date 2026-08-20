@@ -67,6 +67,15 @@ func (qb *queryBuilder) whereNamespace(namespace string) *queryBuilder {
 	return qb
 }
 
+func (qb *queryBuilder) whereNamespaces(namespaces []string) *queryBuilder {
+	if len(namespaces) == 0 {
+		return qb
+	}
+	p := qb.nextParam(namespaces)
+	qb.appendWhere(fmt.Sprintf("namespace IN UNNEST(%s)", p))
+	return qb
+}
+
 func (qb *queryBuilder) whereLabelSelector(selector labels.Selector) *queryBuilder {
 	if selector == nil {
 		return qb
