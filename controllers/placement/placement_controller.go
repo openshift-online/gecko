@@ -23,19 +23,17 @@ const (
 
 // Reconciler implements the placement controller reconcile loop.
 type Reconciler struct {
-	client         client.Client
-	selector       Selector
-	log            logger.Logger
-	customerLabels map[string]string
+	client   client.Client
+	selector Selector
+	log      logger.Logger
 }
 
 // NewReconciler creates a new placement Reconciler.
-func NewReconciler(selector Selector, log logger.Logger, c client.Client, customerLabels map[string]string) *Reconciler {
+func NewReconciler(selector Selector, log logger.Logger, c client.Client) *Reconciler {
 	return &Reconciler{
-		selector:       selector,
-		log:            log,
-		client:         c,
-		customerLabels: customerLabels,
+		selector: selector,
+		log:      log,
+		client:   c,
 	}
 }
 
@@ -73,7 +71,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	cluster.Status.PlacementResult = &privatev1.PlacementResult{
 		ManagementClusterName: mc,
 		BaseDomain:            domain,
-		ResourceLabels:        r.customerLabels,
 	}
 	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 		Type:               "ManagementClusterSelected",

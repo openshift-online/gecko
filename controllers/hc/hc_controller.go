@@ -163,7 +163,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		ReleaseImage:         vr.ReleaseImage,
 		ReleaseChannel:       vr.CincinnatiChannel,
 		BaseDomain:           placement.BaseDomain,
-		ResourceLabels:       placement.ResourceLabels,
 	}
 
 	manifests, err := manifest.Build(mwInput)
