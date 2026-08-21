@@ -117,11 +117,6 @@ func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { r
 
 // buildCluster builds a Cluster for use in tests.
 func buildCluster(id string, placed bool) *privatev1.Cluster {
-	return buildClusterFull(id, placed, nil)
-}
-
-// buildClusterFull builds a Cluster with an optional pre-existing ResourceLabels map.
-func buildClusterFull(id string, placed bool, resourceLabels map[string]string) *privatev1.Cluster {
 	c := &privatev1.Cluster{}
 	c.SetName(id)
 	c.SetNamespace("hyperfleet")
@@ -129,7 +124,6 @@ func buildClusterFull(id string, placed bool, resourceLabels map[string]string) 
 		c.Status.PlacementResult = &privatev1.PlacementResult{
 			ManagementClusterName: "mc-us-c1",
 			BaseDomain:            "hc-us-central1-abc.example.com",
-			ResourceLabels:        resourceLabels,
 		}
 	}
 	return c
@@ -162,7 +156,6 @@ func TestReconciler(t *testing.T) {
 		clusterID          string
 		cluster            *privatev1.Cluster // nil → NotFound
 		selector           Selector
-		statusUpdateErr    error
 		expectUpdate       bool
 		expectStatusUpdate bool
 		expectedResult     reconcile.Result
@@ -178,7 +171,7 @@ func TestReconciler(t *testing.T) {
 			expectedResult:     reconcile.Result{RequeueAfter: requeueStable},
 		},
 		{
-			name:               "already placed: no update",
+			name:               "already placed: no update, empty result",
 			clusterID:          "cluster-2",
 			cluster:            buildCluster("cluster-2", true),
 			selector:           workingSelector(),
@@ -198,8 +191,8 @@ func TestReconciler(t *testing.T) {
 		},
 		{
 			name:               "selector error: return error",
-			clusterID:          "cluster-err",
-			cluster:            buildCluster("cluster-err", false),
+			clusterID:          "cluster-4",
+			cluster:            buildCluster("cluster-4", false),
 			selector:           failingSelector("no candidates available"),
 			expectUpdate:       false,
 			expectStatusUpdate: false,
@@ -209,16 +202,12 @@ func TestReconciler(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			sw := &mockStatusWriter{updateErr: tc.statusUpdateErr}
-			storeClient := &mockStoreClient{cluster: tc.cluster, statusWriter: sw}
+			storeClient := &mockStoreClient{cluster: tc.cluster, statusWriter: &mockStatusWriter{}}
 
 			reconciler := &Reconciler{
 				client:   storeClient,
 				selector: tc.selector,
 				log:      testLogger(t),
-				customerLabels: map[string]string{
-					"goog-partner-solution": "test-partner",
-				},
 			}
 
 			req := reconcile.Request{

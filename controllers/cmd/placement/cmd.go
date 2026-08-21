@@ -36,7 +36,7 @@ func parseDomains(csv string) []string {
 
 // NewCommand returns the placement subcommand.
 func NewCommand(rf *setup.RootFlags) *cobra.Command {
-	var smProject, hcDNSDomains, customerLabelsFile string
+	var smProject, hcDNSDomains string
 
 	cmd := &cobra.Command{
 		Use:   "placement",
@@ -56,11 +56,6 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				return fmt.Errorf("create logger: %w", err)
 			}
 
-			customerLabels, err := placement.LoadCustomerLabels(customerLabelsFile)
-			if err != nil {
-				return fmt.Errorf("load customer labels: %w", err)
-			}
-
 			smClient, err := secretmanager.NewClient(ctx)
 			if err != nil {
 				return fmt.Errorf("create secret manager client: %w", err)
@@ -78,7 +73,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				return fmt.Errorf("create manager: %w", err)
 			}
 
-			rec := placement.NewReconciler(selector, log, mgr.GetClient(), customerLabels)
+			rec := placement.NewReconciler(selector, log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&privatev1.Cluster{}).
@@ -93,7 +88,6 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 
 	cmd.Flags().StringVar(&smProject, "secretmanager-project", "", "GCP project for Secret Manager mc-registration discovery [$SECRETMANAGER_PROJECT] (required)")
 	cmd.Flags().StringVar(&hcDNSDomains, "hc-dns-domains", "", "Comma-separated list of HC DNS zone domains to round-robin across")
-	cmd.Flags().StringVar(&customerLabelsFile, "customer-labels-file", placement.DefaultCustomerLabelsPath, "Path to JSON file containing customer-facing GCP resource labels")
 
 	return cmd
 }

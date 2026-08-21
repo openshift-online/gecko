@@ -31,12 +31,6 @@ spec:
       serviceAccountName: {{ include "gecko-placement.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
-      {{- if and .Values.customerLabels (ne .Values.customerLabels "{}") }}
-      volumes:
-        - name: customer-labels
-          configMap:
-            name: {{ include "gecko-placement.fullname" . }}-customer-labels
-      {{- end }}
       containers:
         - name: placement
           securityContext:
@@ -53,12 +47,6 @@ spec:
             - --workers={{ .Values.workers }}
             - --secretmanager-project={{ .Values.secretManagerProject }}
             - --hc-dns-domains={{ .Values.hcDnsDomains }}
-          {{- if and .Values.customerLabels (ne .Values.customerLabels "{}") }}
-          volumeMounts:
-            - name: customer-labels
-              mountPath: /etc/config/customer-labels
-              readOnly: true
-          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
