@@ -169,8 +169,9 @@ type ClusterStatus struct {
 
 // PlacementResult holds the placement controller's output.
 type PlacementResult struct {
-	ManagementClusterName string `json:"managementClusterName,omitempty"`
-	BaseDomain            string `json:"baseDomain,omitempty"`
+	ManagementClusterName string            `json:"managementClusterName,omitempty"`
+	BaseDomain            string            `json:"baseDomain,omitempty"`
+	ResourceLabels        map[string]string `json:"resourceLabels,omitempty"`
 }
 
 // VersionResolutionResult holds the VR controller's output.

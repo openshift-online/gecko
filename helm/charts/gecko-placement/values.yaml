@@ -22,6 +22,11 @@ secretManagerProject: ""
 # (required). Injected by ArgoCD from Terraform via {{ .Values.hc_dns_domains }}.
 hcDnsDomains: ""
 
+# JSON-encoded customer-facing labels (e.g., goog-partner-solution).
+# Injected by ArgoCD from the cluster secret meta_customer_labels.
+# Default to empty object if not provided.
+customerLabels: "{}"
+
 serviceAccount:
   create: true
   annotations: {}
