@@ -1,0 +1,11 @@
+{{- if and .Values.customerLabels (ne .Values.customerLabels "{}") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gecko-placement.fullname" . }}-customer-labels
+  labels:
+    {{- include "gecko-placement.labels" . | nindent 4 }}
+data:
+  customer-labels.json: |
+    {{- .Values.customerLabels | fromJson | toPrettyJson | nindent 4 }}
+{{- end }}
