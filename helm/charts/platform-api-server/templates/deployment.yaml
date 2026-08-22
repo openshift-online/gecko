@@ -176,9 +176,32 @@ spec:
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- if .Values.affinity }}
       affinity:
-        {{- toYaml . | nindent 8 }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+      {{- else }}
+      {{- $required := .Values.podAntiAffinity.requiredTopologyKey }}
+      {{- $preferred := .Values.podAntiAffinity.preferredTopologyKey }}
+      {{- if or $required $preferred }}
+      affinity:
+        podAntiAffinity:
+          {{- if $required }}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "platform-api-server.selectorLabels" . | nindent 18 }}
+              topologyKey: {{ $required }}
+          {{- end }}
+          {{- if $preferred }}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "platform-api-server.selectorLabels" . | nindent 20 }}
+                topologyKey: {{ $preferred }}
+          {{- end }}
+      {{- end }}
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
