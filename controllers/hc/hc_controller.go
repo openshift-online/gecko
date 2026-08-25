@@ -30,17 +30,19 @@ const (
 
 // Reconciler implements the hc-controller reconcile loop.
 type Reconciler struct {
-	transport transport.Client
-	log       logger.Logger
-	client    client.Client
+	transport      transport.Client
+	log            logger.Logger
+	client         client.Client
+	customerLabels map[string]string
 }
 
 // New creates a new Reconciler.
-func New(transport transport.Client, log logger.Logger, c client.Client) *Reconciler {
+func New(transport transport.Client, log logger.Logger, c client.Client, customerLabels map[string]string) *Reconciler {
 	return &Reconciler{
-		transport: transport,
-		log:       log,
-		client:    c,
+		transport:      transport,
+		log:            log,
+		client:         c,
+		customerLabels: customerLabels,
 	}
 }
 
@@ -163,6 +165,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		ReleaseImage:         vr.ReleaseImage,
 		ReleaseChannel:       vr.CincinnatiChannel,
 		BaseDomain:           placement.BaseDomain,
+		ResourceLabels:       r.customerLabels,
 	}
 
 	manifests, err := manifest.Build(mwInput)

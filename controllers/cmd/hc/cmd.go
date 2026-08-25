@@ -15,6 +15,8 @@ import (
 
 // NewCommand returns the hc subcommand.
 func NewCommand(rf *setup.RootFlags) *cobra.Command {
+	var customerLabelsFile string
+
 	cmd := &cobra.Command{
 		Use:   "hc",
 		Short: "Run the hosted-cluster (hc) controller",
@@ -26,6 +28,14 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				return fmt.Errorf("create logger: %w", err)
 			}
 
+			var customerLabels map[string]string
+			if customerLabelsFile != "" {
+				customerLabels, err = hc.LoadCustomerLabels(customerLabelsFile)
+				if err != nil {
+					return fmt.Errorf("load customer labels: %w", err)
+				}
+			}
+
 			t := fstransport.New(log)
 			defer t.Close()
 
@@ -35,7 +45,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				return fmt.Errorf("create manager: %w", err)
 			}
 
-			rec := hc.New(t, log, mgr.GetClient())
+			rec := hc.New(t, log, mgr.GetClient(), customerLabels)
 
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&privatev1.Cluster{}).
@@ -47,6 +57,8 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 			return mgr.Start(ctx)
 		},
 	}
+
+	cmd.Flags().StringVar(&customerLabelsFile, "customer-labels-file", "", "Path to JSON file containing customer-facing GCP resource labels (omit to disable)")
 
 	return cmd
 }
