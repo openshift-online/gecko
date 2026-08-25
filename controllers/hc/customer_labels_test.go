@@ -34,10 +34,10 @@ func TestLoadCustomerLabels(t *testing.T) {
 		assert.Empty(t, labels)
 	})
 
-	t.Run("file does not exist: returns nil, no error", func(t *testing.T) {
-		labels, err := LoadCustomerLabels(filepath.Join(t.TempDir(), "nonexistent.json"))
-		require.NoError(t, err)
-		assert.Nil(t, labels)
+	t.Run("file does not exist: returns error", func(t *testing.T) {
+		_, err := LoadCustomerLabels(filepath.Join(t.TempDir(), "nonexistent.json"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read customer labels file")
 	})
 
 	t.Run("invalid JSON: returns error", func(t *testing.T) {

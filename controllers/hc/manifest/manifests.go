@@ -4,6 +4,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 )
 
@@ -408,9 +409,14 @@ func buildGCPPlatform(input Input) map[string]any {
 		},
 	}
 	if len(input.ResourceLabels) > 0 {
-		labels := make([]map[string]any, 0, len(input.ResourceLabels))
-		for k, v := range input.ResourceLabels {
-			labels = append(labels, map[string]any{"key": k, "value": v})
+		keys := make([]string, 0, len(input.ResourceLabels))
+		for k := range input.ResourceLabels {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		labels := make([]map[string]any, 0, len(keys))
+		for _, k := range keys {
+			labels = append(labels, map[string]any{"key": k, "value": input.ResourceLabels[k]})
 		}
 		gcp["resourceLabels"] = labels
 	}
