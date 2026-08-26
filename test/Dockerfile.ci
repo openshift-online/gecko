@@ -32,3 +32,6 @@ RUN curl -sSLf "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/googl
     chmod -R a+rX /usr/lib/google-cloud-sdk && \
     ln -s /usr/lib/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud && \
     rm /tmp/google-cloud-sdk.tar.gz
+
+# Run as non-root user (UID 1001 is standard in OCP base images)
+USER 1001
