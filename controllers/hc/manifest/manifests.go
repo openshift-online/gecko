@@ -4,6 +4,7 @@ package manifest
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 )
 
@@ -33,12 +34,13 @@ type Input struct {
 	ReleaseImage                 string
 	ReleaseChannel               string
 	BaseDomain                   string
-	PullSecretStoreName          string // default: "gcp-secret-manager"
-	PullSecretGCPKey             string // default: "default-openshift-pull-secret"
-	ControllerAvailabilityPolicy string // default: "HighlyAvailable"
-	CPOImage                     string // optional — set CPO annotation if non-empty
-	CAPGImage                    string // optional — set CAPG annotation if non-empty
-	Slug                         string // default: "user" (username slug for DNS names)
+	PullSecretStoreName          string            // default: "gcp-secret-manager"
+	PullSecretGCPKey             string            // default: "default-openshift-pull-secret"
+	ControllerAvailabilityPolicy string            // default: "HighlyAvailable"
+	CPOImage                     string            // optional — set CPO annotation if non-empty
+	CAPGImage                    string            // optional — set CAPG annotation if non-empty
+	Slug                         string            // default: "user" (username slug for DNS names)
+	ResourceLabels               map[string]string // optional — sets spec.platform.gcp.resourceLabels on the HostedCluster CR
 }
 
 // Build constructs raw JSON bytes for each manifest resource from the given input.
@@ -241,7 +243,7 @@ func buildHostedCluster(input Input, clusterNS string) ([]byte, error) {
 	oauthHostname := fmt.Sprintf("oauth.%s-%s.%s", input.ClusterName, input.Slug, input.BaseDomain)
 
 	annotations := map[string]any{
-		"gcp.managed.openshift.io/generation":                                      genStr,
+		"gcp.managed.openshift.io/generation":                           genStr,
 		"hypershift.openshift.io/pod-security-admission-label-override": "baseline",
 		"hypershift.openshift.io/skip-kas-conflict-san-validation":      "true",
 	}
@@ -292,32 +294,7 @@ func buildHostedCluster(input Input, clusterNS string) ([]byte, error) {
 			},
 			"platform": map[string]any{
 				"type": "GCP",
-				"gcp": map[string]any{
-					"project": input.GCPProjectID,
-					"region":  input.GCPRegion,
-					"networkConfig": map[string]any{
-						"network": map[string]any{
-							"name": input.GCPNetwork,
-						},
-						"privateServiceConnectSubnet": map[string]any{
-							"name": input.GCPSubnet,
-						},
-					},
-					"endpointAccess": input.GCPEndpointAccess,
-					"workloadIdentity": map[string]any{
-						"projectNumber": input.WIFProjectNumber,
-						"poolID":        input.WIFPoolID,
-						"providerID":    input.WIFProviderID,
-						"serviceAccountsEmails": map[string]any{
-							"nodePool":        input.NodePoolEmail,
-							"controlPlane":    input.ControlPlaneEmail,
-							"cloudController": input.CloudControllerEmail,
-							"storage":         input.StorageEmail,
-							"imageRegistry":   input.ImageRegistryEmail,
-							"network":         input.NetworkEmail,
-						},
-					},
-				},
+				"gcp":  buildGCPPlatform(input),
 			},
 			"services": []any{
 				map[string]any{
@@ -404,6 +381,48 @@ func buildHostedCluster(input Input, clusterNS string) ([]byte, error) {
 	return raw, nil
 }
 
+func buildGCPPlatform(input Input) map[string]any {
+	gcp := map[string]any{
+		"project": input.GCPProjectID,
+		"region":  input.GCPRegion,
+		"networkConfig": map[string]any{
+			"network": map[string]any{
+				"name": input.GCPNetwork,
+			},
+			"privateServiceConnectSubnet": map[string]any{
+				"name": input.GCPSubnet,
+			},
+		},
+		"endpointAccess": input.GCPEndpointAccess,
+		"workloadIdentity": map[string]any{
+			"projectNumber": input.WIFProjectNumber,
+			"poolID":        input.WIFPoolID,
+			"providerID":    input.WIFProviderID,
+			"serviceAccountsEmails": map[string]any{
+				"nodePool":        input.NodePoolEmail,
+				"controlPlane":    input.ControlPlaneEmail,
+				"cloudController": input.CloudControllerEmail,
+				"storage":         input.StorageEmail,
+				"imageRegistry":   input.ImageRegistryEmail,
+				"network":         input.NetworkEmail,
+			},
+		},
+	}
+	if len(input.ResourceLabels) > 0 {
+		keys := make([]string, 0, len(input.ResourceLabels))
+		for k := range input.ResourceLabels {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		labels := make([]map[string]any, 0, len(keys))
+		for _, k := range keys {
+			labels = append(labels, map[string]any{"key": k, "value": input.ResourceLabels[k]})
+		}
+		gcp["resourceLabels"] = labels
+	}
+	return gcp
+}
+
 func buildRBACJob(input Input, hcNS string) ([]byte, error) {
 	genStr := strconv.FormatInt(input.Generation, 10)
 	jobName := fmt.Sprintf("rbac-setup-gen-%d", input.Generation)
@@ -466,7 +485,7 @@ kubectl --kubeconfig=/kubeconfig/kubeconfig get clusterrolebinding redhat-domain
 				"gcp.managed.openshift.io/cluster-id":    input.ClusterID,
 				"gcp.managed.openshift.io/managed-by":    "hc-controller",
 				"gcp.managed.openshift.io/resource-type": "rbac-setup",
-				"job":                         "rbac-setup",
+				"job":                                    "rbac-setup",
 			},
 			"annotations": map[string]any{
 				"gcp.managed.openshift.io/generation": genStr,
@@ -479,7 +498,7 @@ kubectl --kubeconfig=/kubeconfig/kubeconfig get clusterrolebinding redhat-domain
 			"template": map[string]any{
 				"metadata": map[string]any{
 					"labels": map[string]any{
-						"job":                      "rbac-setup",
+						"job":                                 "rbac-setup",
 						"gcp.managed.openshift.io/cluster-id": input.ClusterID,
 					},
 				},

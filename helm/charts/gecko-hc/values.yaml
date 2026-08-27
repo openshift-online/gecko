@@ -11,6 +11,11 @@ fullnameOverride: ""
 
 orlopURL: ""
 logLevel: info
+
+# JSON-encoded customer-facing GCP resource labels (e.g., goog-partner-solution).
+# Injected by ArgoCD from the cluster secret meta_customer_labels.
+# Default to empty object if not provided.
+customerLabels: "{}"
 logFormat: json
 workers: 10
 

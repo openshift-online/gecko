@@ -207,7 +207,7 @@ func buildReconciler(
 	for _, o := range opts {
 		o(storeClient)
 	}
-	return hc.New(tr, testLogger(t), storeClient), storeClient
+	return hc.New(tr, testLogger(t), storeClient, nil), storeClient
 }
 
 // ---------------------------------------------------------------------------
