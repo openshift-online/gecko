@@ -1,0 +1,37 @@
+# CI test image: Go toolchain + gcloud CLI + Java 21 + Firestore emulator
+#
+# Used by gecko's Prow test job to run Firestore transport integration tests.
+# Built and promoted via ci-operator (images + promotion sections).
+#
+# In CI the base would be ocp/builder:rhel-9-golang-1.26-openshift-4.23;
+# we use the same RHEL 9 builder so the Go toolchain is available at runtime
+# (gecko runs `go test ./...`, not a pre-compiled binary).
+FROM registry.ci.openshift.org/ocp/builder:rhel-9-golang-1.26-openshift-4.23
+
+# Install Java 21 (required by Firestore emulator since gcloud 528.0.0)
+RUN dnf install -y java-21-openjdk-headless && \
+    dnf clean all && rm -rf /var/cache/dnf/*
+
+# Install gcloud CLI from official tarball (same approach as gcp-hcp-infra).
+# Pinned to a specific version for reproducibility.
+# To upgrade: set NEW_VERSION and update ARG values below:
+#   NEW_VERSION=582.0.0
+#   curl -sLf https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${NEW_VERSION}-linux-x86_64.tar.gz | sha256sum
+ARG GCLOUD_VERSION=581.0.0
+ARG GCLOUD_SHA256=deffdbe82ca6e3d19ffb291d063a651488e04e1b33799b5a238e4b5c6784e3c6
+
+RUN curl -sSLf "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" \
+        -o /tmp/google-cloud-sdk.tar.gz && \
+    echo "${GCLOUD_SHA256}  /tmp/google-cloud-sdk.tar.gz" | sha256sum -c - && \
+    tar -xf /tmp/google-cloud-sdk.tar.gz -C /usr/lib && \
+    /usr/lib/google-cloud-sdk/install.sh \
+        --quiet \
+        --path-update=false \
+        --usage-reporting=false && \
+    /usr/lib/google-cloud-sdk/bin/gcloud components install cloud-firestore-emulator beta --quiet && \
+    chmod -R a+rX /usr/lib/google-cloud-sdk && \
+    ln -s /usr/lib/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud && \
+    rm /tmp/google-cloud-sdk.tar.gz
+
+# Run as non-root user (UID 1001 is standard in OCP base images)
+USER 1001
