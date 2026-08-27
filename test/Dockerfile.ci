@@ -16,11 +16,12 @@ RUN dnf install -y java-21-openjdk-headless && \
 # Pinned to a specific version for reproducibility.
 # To upgrade: set NEW_VERSION and update ARG values below:
 #   NEW_VERSION=582.0.0
-#   curl -sLf https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${NEW_VERSION}-linux-x86_64.tar.gz | sha256sum
+#   curl -fSL https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${NEW_VERSION}-linux-x86_64.tar.gz | sha256sum
 ARG GCLOUD_VERSION=581.0.0
 ARG GCLOUD_SHA256=deffdbe82ca6e3d19ffb291d063a651488e04e1b33799b5a238e4b5c6784e3c6
 
-RUN curl -sSLf "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" \
+RUN curl -fSL --retry 3 --retry-delay 5 --retry-all-errors \
+        "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz" \
         -o /tmp/google-cloud-sdk.tar.gz && \
     echo "${GCLOUD_SHA256}  /tmp/google-cloud-sdk.tar.gz" | sha256sum -c - && \
     tar -xf /tmp/google-cloud-sdk.tar.gz -C /usr/lib && \
