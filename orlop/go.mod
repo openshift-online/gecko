@@ -14,7 +14,7 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822
 	golang.org/x/net v0.58.0
 	google.golang.org/api v0.293.0
-	google.golang.org/grpc v1.83.1
+	google.golang.org/grpc v1.83.2
 	k8s.io/apiextensions-apiserver v0.36.4
 	k8s.io/apimachinery v0.36.4
 	k8s.io/apiserver v0.36.4
