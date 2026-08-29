@@ -11,7 +11,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel/trace v1.46.0
-	google.golang.org/api v0.293.0
+	google.golang.org/api v0.294.0
 	google.golang.org/grpc v1.83.2
 	k8s.io/apimachinery v0.36.4
 	k8s.io/client-go v0.36.4
