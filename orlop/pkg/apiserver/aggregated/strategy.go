@@ -57,9 +57,9 @@ func (s *ResourceStrategy) GenerateName(base string) string {
 func (s *ResourceStrategy) NamespaceScoped() bool {
 	return s.namespaced
 }
-func (s *ResourceStrategy) Canonicalize(obj runtime.Object) {}
-func (s *ResourceStrategy) AllowCreateOnUpdate() bool       { return false }
-func (s *ResourceStrategy) AllowUnconditionalUpdate() bool  { return false }
+func (s *ResourceStrategy) Canonicalize(obj runtime.Object)                 {}
+func (s *ResourceStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (s *ResourceStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return false }
 
 func (s *ResourceStrategy) PrepareForCreate(ctx context.Context, obj runtime.Object) {
 	if s.processor != nil {

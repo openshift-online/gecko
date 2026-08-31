@@ -199,8 +199,15 @@ func TestNamespaceScoped(t *testing.T) {
 
 func TestAllowCreateOnUpdate(t *testing.T) {
 	strategy := newTestStrategy(t, true)
-	if strategy.AllowCreateOnUpdate() {
+	if strategy.AllowCreateOnUpdate(t.Context()) {
 		t.Error("expected AllowCreateOnUpdate() to return false")
+	}
+}
+
+func TestAllowUnconditionalUpdate(t *testing.T) {
+	strategy := newTestStrategy(t, true)
+	if strategy.AllowUnconditionalUpdate(t.Context()) {
+		t.Error("expected AllowUnconditionalUpdate() to return false")
 	}
 }
 
@@ -546,4 +553,3 @@ func TestPrepareForUpdate_PreservesCreatedByAnnotation(t *testing.T) {
 		t.Errorf("created-by annotation = %q, want %q", got, "original@example.com")
 	}
 }
-
