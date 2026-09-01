@@ -551,7 +551,7 @@ func TestReconcile_TransportApplyError(t *testing.T) {
 	np := testNodePool("4.16.0")
 	cluster := testCluster(true, true)
 
-	tr := &errTransport{applyErr: fmt.Errorf("maestro unavailable")}
+	tr := &errTransport{applyErr: fmt.Errorf("transport unavailable")}
 	r, _ := buildReconciler(t, np, cluster, tr, nil, nil, nil)
 
 	_, err := r.Reconcile(context.Background(), npReq("cluster-test", "np-test"))
@@ -1184,10 +1184,10 @@ func TestReconcile_Progressing_UpdatingVersion(t *testing.T) {
 		},
 		ResourceStatuses: map[string]map[string]string{
 			npKey: {
-				"readyCondition":             "True",
-				"allNodesHealthyCondition":   "True",
-				"allMachinesReadyCondition":  "True",
-				"updatingVersionCondition":   "True",
+				"readyCondition":            "True",
+				"allNodesHealthyCondition":  "True",
+				"allMachinesReadyCondition": "True",
+				"updatingVersionCondition":  "True",
 			},
 		},
 	}
