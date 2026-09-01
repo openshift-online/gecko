@@ -61,7 +61,7 @@ const (
 	ErrorInvalidCloudEvent ServiceErrorCode = 15
 
 	// ConfigurationError occurs when there's a configuration error
-	ErrorConfigurationError ServiceErrorCode = 17
+	ErrorConfigurationError ServiceErrorCode = 16
 )
 
 type ServiceErrorCode int
