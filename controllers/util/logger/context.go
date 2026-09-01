@@ -44,9 +44,6 @@ const (
 	ControllerKey         = "controller"
 	ObservedGenerationKey = "observed_generation"
 	SubscriptionKey       = "subscription"
-
-	// Maestro-specific fields
-	MaestroConsumerKey = "maestro_consumer"
 )
 
 // LogFields holds dynamic key-value pairs for logging
@@ -140,11 +137,6 @@ func WithObservedGeneration(ctx context.Context, generation int64) context.Conte
 // WithSubscription returns a context with the subscription name set
 func WithSubscription(ctx context.Context, subscription string) context.Context {
 	return WithLogField(ctx, SubscriptionKey, subscription)
-}
-
-// WithMaestroConsumer returns a context with the Maestro consumer name set
-func WithMaestroConsumer(ctx context.Context, consumer string) context.Context {
-	return WithLogField(ctx, MaestroConsumerKey, consumer)
 }
 
 // WithErrorField returns a context with the error message set.

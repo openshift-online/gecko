@@ -429,7 +429,7 @@ func TestReconcile_TransportApplyError(t *testing.T) {
 	clusterID := "cluster-abc"
 	cluster := buildReadyCluster(clusterID, "4.15.0")
 
-	tr := &errTransport{applyErr: fmt.Errorf("maestro unavailable")}
+	tr := &errTransport{applyErr: fmt.Errorf("transport unavailable")}
 	r, _ := buildReconciler(t, cluster, nil, tr, nil)
 
 	_, err := r.Reconcile(context.Background(), clusterReq(clusterID))

@@ -52,8 +52,7 @@ type ApplyDecision struct {
 //   - If generations match: Skip (no changes needed)
 //   - If generations differ: Update (apply changes)
 //
-// This function encapsulates the generation comparison logic used by both
-// resource_executor (for k8s resources) and maestroclient (for ManifestWorks).
+// This function encapsulates generation comparison for resource application.
 func CompareGenerations(newGen, existingGen int64, exists bool) ApplyDecision {
 	if !exists {
 		return ApplyDecision{
@@ -249,8 +248,6 @@ func GetLatestGenerationFromList(list *unstructured.UnstructuredList) *unstructu
 // =============================================================================
 
 // Discovery defines the interface for resource/manifest discovery configuration.
-// This interface is used by both k8sclient (for K8s resources)
-// and maestroclient (for ManifestWork manifests).
 type Discovery interface {
 	// GetNamespace returns the namespace to search in.
 	// Empty string means cluster-scoped or all namespaces.
@@ -270,7 +267,6 @@ type Discovery interface {
 }
 
 // DiscoveryConfig is the default implementation of the Discovery interface.
-// Used by both k8sclient and maestroclient for consistent discovery configuration.
 type DiscoveryConfig struct {
 	// Namespace to search in (empty for cluster-scoped or all namespaces)
 	Namespace string
