@@ -42,13 +42,13 @@ type DeleteStatus struct {
 // Client abstracts the transport layer for delivering resources to management clusters.
 type Client interface {
 	// Apply creates or updates resources on the target cluster and returns current status.
-	Apply(ctx context.Context, targetCluster, clusterID string, manifests [][]byte) (*Status, error)
-	// GetStatus reads back the status of resources for the given clusterID.
-	GetStatus(ctx context.Context, targetCluster, clusterID string) (*Status, error)
-	// Delete removes all resources for the given clusterID from the target cluster.
-	Delete(ctx context.Context, targetCluster, clusterID string) error
-	// GetDeleteStatus checks the status of delete operations for the given clusterID.
-	GetDeleteStatus(ctx context.Context, targetCluster, clusterID string) (*DeleteStatus, error)
-	// CleanupDeleteDesires removes all DeleteDesire documents for the given clusterID.
-	CleanupDeleteDesires(ctx context.Context, targetCluster, clusterID string) error
+	Apply(ctx context.Context, targetCluster, groupKey string, manifests [][]byte) (*Status, error)
+	// GetStatus reads back the status of resources for the given groupKey.
+	GetStatus(ctx context.Context, targetCluster, groupKey string) (*Status, error)
+	// Delete removes all resources for the given groupKey from the target cluster.
+	Delete(ctx context.Context, targetCluster, groupKey string) error
+	// GetDeleteStatus checks the status of delete operations for the given groupKey.
+	GetDeleteStatus(ctx context.Context, targetCluster, groupKey string) (*DeleteStatus, error)
+	// CleanupDeleteDesires removes all DeleteDesire documents for the given groupKey.
+	CleanupDeleteDesires(ctx context.Context, targetCluster, groupKey string) error
 }
