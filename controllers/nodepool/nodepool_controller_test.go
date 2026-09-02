@@ -620,7 +620,7 @@ func TestReconcile_HappyPath(t *testing.T) {
 
 	require.Len(t, tr.ApplyCalls, 1)
 	require.Equal(t, "mc-us-c1", tr.ApplyCalls[0].TargetCluster)
-	require.Equal(t, "np-test", tr.ApplyCalls[0].ClusterID)
+	require.Equal(t, "np-test", tr.ApplyCalls[0].GroupKey)
 	require.True(t, storeClient.statusWriter.called, "expected Status().Update to be called")
 
 	captured := storeClient.statusWriter.captured.(*privatev1.NodePool)
@@ -899,7 +899,7 @@ func TestReconcile_Deletion_HappyPath(t *testing.T) {
 	require.Equal(t, 15*time.Second, result.RequeueAfter, "should requeue after initiating delete")
 	require.Len(t, tr.DeleteCalls, 1)
 	require.Equal(t, "mc-us-c1", tr.DeleteCalls[0].TargetCluster)
-	require.Equal(t, "np-test", tr.DeleteCalls[0].ClusterID)
+	require.Equal(t, "np-test", tr.DeleteCalls[0].GroupKey)
 	require.False(t, storeClient.updateCalled, "finalizer not removed yet")
 
 	// Simulate kube-applier-gcp completing deletion.
@@ -912,7 +912,7 @@ func TestReconcile_Deletion_HappyPath(t *testing.T) {
 	require.Zero(t, result.RequeueAfter)
 	require.Len(t, tr.CleanupDeleteDesiresCalls, 1, "should cleanup DeleteDesires")
 	require.Equal(t, "mc-us-c1", tr.CleanupDeleteDesiresCalls[0].TargetCluster)
-	require.Equal(t, "np-test", tr.CleanupDeleteDesiresCalls[0].ClusterID)
+	require.Equal(t, "np-test", tr.CleanupDeleteDesiresCalls[0].GroupKey)
 
 	require.True(t, storeClient.updateCalled, "expected Update to remove finalizer")
 	updated := storeClient.updated.(*privatev1.NodePool)
