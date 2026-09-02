@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/openshift-online/gecko/controllers/client/transport"
 	fstransport "github.com/openshift-online/gecko/controllers/client/transport/firestore"
 	"github.com/openshift-online/gecko/controllers/util/logger"
 	"github.com/openshift-online/kube-applier-gcp/pkg/api/kubeapplier"
@@ -25,6 +26,8 @@ const (
 	// testMCName is the GCP project ID that identifies the MC.
 	testMCName    = "test-project"
 	testClusterID = "cluster-abc"
+	// testGroupKey is the project-scoped groupKey used by existing integration tests.
+	testGroupKey = "projects/test-ns/clusters/cluster-abc"
 )
 
 func emulatorOpts(t *testing.T) []option.ClientOption {
@@ -81,24 +84,25 @@ func clearCollection(ctx context.Context, t *testing.T, client *firestore.Client
 	}
 }
 
-// applyDesireSpec builds a minimal ApplyDesireSpec for the given clusterID and resource name.
-func applyDesireSpec(clusterID, name string) kubeapplier.ApplyDesireSpec {
+// applyDesireSpec builds a minimal ApplyDesireSpec for the given groupKey and resource name.
+func applyDesireSpec(groupKey, name string) kubeapplier.ApplyDesireSpec {
 	return kubeapplier.ApplyDesireSpec{
 		ManagementCluster: testMCName,
-		ClusterID:         clusterID,
+		ClusterID:         groupKey,
+		GroupKey:          groupKey,
 		TargetItem: kubeapplier.ResourceReference{
 			Group:     "hypershift.openshift.io",
 			Version:   "v1beta1",
 			Resource:  "hostedclusters",
-			Namespace: fmt.Sprintf("clusters-%s", clusterID),
+			Namespace: fmt.Sprintf("clusters-%s", groupKey),
 			Name:      name,
 		},
 	}
 }
 
 // specsApplyDesire returns an ApplyDesire suitable for writing to the specs DB.
-func specsApplyDesire(clusterID, name string) kubeapplier.ApplyDesire {
-	return kubeapplier.ApplyDesire{Spec: applyDesireSpec(clusterID, name)}
+func specsApplyDesire(groupKey, name string) kubeapplier.ApplyDesire {
+	return kubeapplier.ApplyDesire{Spec: applyDesireSpec(groupKey, name)}
 }
 
 // statusApplyDesire returns an ApplyDesire as kube-applier-gcp writes it to the
@@ -127,11 +131,11 @@ func TestIntegration_Apply_WritesApplyAndReadDesires(t *testing.T) {
 		hcManifest(t, testClusterID, "my-hc"),
 	}
 
-	_, err = c.Apply(ctx, testMCName, testClusterID, manifests)
+	_, err = c.Apply(ctx, testMCName, testGroupKey, manifests)
 	require.NoError(t, err)
 
 	snaps, err := specsClient.Collection("applydesires").
-		Where("spec.clusterID", "==", testClusterID).
+		Where("spec.groupKey", "==", testGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	assert.Len(t, snaps, 1, "expected 1 ApplyDesire for the HostedCluster manifest")
@@ -141,7 +145,7 @@ func TestIntegration_Apply_WritesApplyAndReadDesires(t *testing.T) {
 	assert.NotNil(t, data["spec_kubeContent"])
 
 	readSnaps, err := specsClient.Collection("readdesires").
-		Where("spec.clusterID", "==", testClusterID).
+		Where("spec.groupKey", "==", testGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	assert.Len(t, readSnaps, 1, "expected 1 ReadDesire for the HostedCluster manifest")
@@ -170,7 +174,7 @@ func TestIntegration_GetStatus_AllSuccessful(t *testing.T) {
 
 	const docID = "doc-1"
 
-	_, err = specsClient.Collection("applydesires").Doc(docID).Set(ctx, specsApplyDesire(testClusterID, "my-hc"))
+	_, err = specsClient.Collection("applydesires").Doc(docID).Set(ctx, specsApplyDesire(testGroupKey, "my-hc"))
 	require.NoError(t, err)
 
 	_, err = statusClient.Collection("applydesires").Doc(docID).Set(ctx, statusApplyDesire([]metav1.Condition{
@@ -178,7 +182,7 @@ func TestIntegration_GetStatus_AllSuccessful(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	status, err := c.GetStatus(ctx, testMCName, testClusterID)
+	status, err := c.GetStatus(ctx, testMCName, testGroupKey)
 	require.NoError(t, err)
 	require.Len(t, status.Conditions, 1)
 	assert.Equal(t, "Applied", status.Conditions[0].Type)
@@ -208,9 +212,9 @@ func TestIntegration_GetStatus_MissingStatusDocReportsPending(t *testing.T) {
 	defer clearCollection(ctx, t, statusClient, "applydesires")
 
 	// Two resources in specs DB.
-	_, err = specsClient.Collection("applydesires").Doc("doc-1").Set(ctx, specsApplyDesire(testClusterID, "hc-1"))
+	_, err = specsClient.Collection("applydesires").Doc("doc-1").Set(ctx, specsApplyDesire(testGroupKey, "hc-1"))
 	require.NoError(t, err)
-	_, err = specsClient.Collection("applydesires").Doc("doc-2").Set(ctx, specsApplyDesire(testClusterID, "hc-2"))
+	_, err = specsClient.Collection("applydesires").Doc("doc-2").Set(ctx, specsApplyDesire(testGroupKey, "hc-2"))
 	require.NoError(t, err)
 
 	// Only doc-1 has a status doc with Successful=True; doc-2 is missing.
@@ -219,7 +223,7 @@ func TestIntegration_GetStatus_MissingStatusDocReportsPending(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	status, err := c.GetStatus(ctx, testMCName, testClusterID)
+	status, err := c.GetStatus(ctx, testMCName, testGroupKey)
 	require.NoError(t, err)
 	require.Len(t, status.Conditions, 1)
 	assert.Equal(t, "Applied", status.Conditions[0].Type)
@@ -251,7 +255,8 @@ func TestIntegration_GetStatus_ExtractsHCKubeContent(t *testing.T) {
 	specsReadDesire := kubeapplier.ReadDesire{
 		Spec: kubeapplier.ReadDesireSpec{
 			ManagementCluster: testMCName,
-			ClusterID:         testClusterID,
+			ClusterID:         testGroupKey,
+			GroupKey:          testGroupKey,
 			TargetItem: kubeapplier.ResourceReference{
 				Group:     "hypershift.openshift.io",
 				Version:   "v1beta1",
@@ -284,7 +289,7 @@ func TestIntegration_GetStatus_ExtractsHCKubeContent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	status, err := c.GetStatus(ctx, testMCName, testClusterID)
+	status, err := c.GetStatus(ctx, testMCName, testGroupKey)
 	require.NoError(t, err)
 
 	key := "hypershift.openshift.io/v1beta1/hostedclusters/clusters-abc/my-hc"
@@ -315,20 +320,20 @@ func TestIntegration_Delete_WritesDeleteDesireAndRemovesApplyRead(t *testing.T) 
 		npManifest(t, testClusterID, "my-np"),
 	}
 
-	_, err = c.Apply(ctx, testMCName, testClusterID, manifests)
+	_, err = c.Apply(ctx, testMCName, testGroupKey, manifests)
 	require.NoError(t, err)
 
-	err = c.Delete(ctx, testMCName, testClusterID)
+	err = c.Delete(ctx, testMCName, testGroupKey)
 	require.NoError(t, err)
 
 	applySnaps, err := specsClient.Collection("applydesires").
-		Where("spec.clusterID", "==", testClusterID).
+		Where("spec.groupKey", "==", testGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	assert.Empty(t, applySnaps, "ApplyDesires should be deleted")
 
 	readSnaps, err := specsClient.Collection("readdesires").
-		Where("spec.clusterID", "==", testClusterID).
+		Where("spec.groupKey", "==", testGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	assert.Empty(t, readSnaps, "ReadDesires should be deleted")
@@ -339,7 +344,8 @@ func TestIntegration_Delete_WritesDeleteDesireAndRemovesApplyRead(t *testing.T) 
 
 	var dd kubeapplier.DeleteDesire
 	require.NoError(t, deleteSnaps[0].DataTo(&dd))
-	assert.Equal(t, testClusterID, dd.Spec.ClusterID)
+	assert.Equal(t, testGroupKey, dd.Spec.ClusterID)
+	assert.Equal(t, testGroupKey, dd.Spec.GroupKey)
 }
 
 func TestIntegration_Delete_IsolatesNodePoolsWithSameNameAcrossClusters(t *testing.T) {
@@ -375,32 +381,28 @@ func TestIntegration_Delete_IsolatesNodePoolsWithSameNameAcrossClusters(t *testi
 		otherClusterID = "customer-cluster-b"
 	)
 
-	_, err = c.Apply(ctx, testMCName, nodePoolName, [][]byte{
+	firstGroupKey, err := transport.NodePoolGroupKey("test-ns", firstClusterID, nodePoolName)
+	require.NoError(t, err)
+	otherGroupKey, err := transport.NodePoolGroupKey("test-ns", otherClusterID, nodePoolName)
+	require.NoError(t, err)
+
+	_, err = c.Apply(ctx, testMCName, firstGroupKey, [][]byte{
 		npManifest(t, firstClusterID, nodePoolName),
 	})
 	require.NoError(t, err)
-	_, err = c.Apply(ctx, testMCName, nodePoolName, [][]byte{
+	_, err = c.Apply(ctx, testMCName, otherGroupKey, [][]byte{
 		npManifest(t, otherClusterID, nodePoolName),
 	})
 	require.NoError(t, err)
 
 	applySnaps, err := specsClient.Collection("applydesires").
-		Where("spec.clusterID", "==", nodePoolName).
+		Where("spec.groupKey", "==", otherGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
-	require.Len(t, applySnaps, 2)
+	require.Len(t, applySnaps, 1)
+	otherClusterRef := applySnaps[0].Ref
 
-	var otherClusterRef *firestore.DocumentRef
-	for _, snap := range applySnaps {
-		var desire kubeapplier.ApplyDesire
-		require.NoError(t, snap.DataTo(&desire))
-		if desire.Spec.TargetItem.Namespace == "clusters-"+otherClusterID {
-			otherClusterRef = snap.Ref
-		}
-	}
-	require.NotNil(t, otherClusterRef, "expected an ApplyDesire for the other customer cluster")
-
-	err = c.Delete(ctx, testMCName, nodePoolName)
+	err = c.Delete(ctx, testMCName, firstGroupKey)
 	require.NoError(t, err)
 
 	otherClusterSnap, err := otherClusterRef.Get(ctx)
@@ -432,21 +434,23 @@ func TestIntegration_Delete_ChunksLargeBatches(t *testing.T) {
 	// Seed 200 ApplyDesire + ReadDesire docs — enough to require 2 chunks
 	// (maxDeleteBatchSize = 166, so 200 requires 2 transactions).
 	const resourceCount = 200
-	const chunkedClusterID = "cluster-chunked"
+	chunkedGroupKey, err := transport.ClusterGroupKey("test-ns", "cluster-chunked")
+	require.NoError(t, err)
 
 	batch := specsClient.BulkWriter(ctx)
 	for i := range resourceCount {
 		name := fmt.Sprintf("resource-%d", i)
 		docID := fmt.Sprintf("chunked-%d", i)
 
-		ad := specsApplyDesire(chunkedClusterID, name)
+		ad := specsApplyDesire(chunkedGroupKey, name)
 		applyRef := specsClient.Collection("applydesires").Doc(docID)
 		_, err := batch.Set(applyRef, ad)
 		require.NoError(t, err)
 
 		rd := kubeapplier.ReadDesire{Spec: kubeapplier.ReadDesireSpec{
 			ManagementCluster: testMCName,
-			ClusterID:         chunkedClusterID,
+			ClusterID:         chunkedGroupKey,
+			GroupKey:          chunkedGroupKey,
 			TargetItem:        ad.Spec.TargetItem,
 		}}
 		readRef := specsClient.Collection("readdesires").Doc(docID)
@@ -455,17 +459,17 @@ func TestIntegration_Delete_ChunksLargeBatches(t *testing.T) {
 	}
 	batch.Flush()
 
-	err = c.Delete(ctx, testMCName, chunkedClusterID)
+	err = c.Delete(ctx, testMCName, chunkedGroupKey)
 	require.NoError(t, err)
 
 	applySnaps, err := specsClient.Collection("applydesires").
-		Where("spec.clusterID", "==", chunkedClusterID).
+		Where("spec.groupKey", "==", chunkedGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	assert.Empty(t, applySnaps, "all ApplyDesires should be deleted")
 
 	readSnaps, err := specsClient.Collection("readdesires").
-		Where("spec.clusterID", "==", chunkedClusterID).
+		Where("spec.groupKey", "==", chunkedGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	assert.Empty(t, readSnaps, "all ReadDesires should be deleted")
@@ -504,14 +508,14 @@ func TestIntegration_Apply_StaleWhenStatusNotProcessed(t *testing.T) {
 	manifests := [][]byte{npManifest(t, testClusterID, "stale-np")}
 
 	// First Apply — no status docs exist yet → stale.
-	status, err := c.Apply(ctx, testMCName, testClusterID, manifests)
+	status, err := c.Apply(ctx, testMCName, testGroupKey, manifests)
 	require.NoError(t, err)
 	assert.True(t, status.Stale, "should be stale when no status docs exist")
 
 	// Simulate kube-applier-gcp processing: write status docs with a
 	// mismatched ObservedDesireUpdateTime (an old timestamp).
 	applySnaps, err := specsClient.Collection("applydesires").
-		Where("spec.clusterID", "==", testClusterID).
+		Where("spec.groupKey", "==", testGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	require.Len(t, applySnaps, 1)
@@ -527,7 +531,7 @@ func TestIntegration_Apply_StaleWhenStatusNotProcessed(t *testing.T) {
 	require.NoError(t, err)
 
 	readSnaps, err := specsClient.Collection("readdesires").
-		Where("spec.clusterID", "==", testClusterID).
+		Where("spec.groupKey", "==", testGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	require.Len(t, readSnaps, 1)
@@ -541,14 +545,14 @@ func TestIntegration_Apply_StaleWhenStatusNotProcessed(t *testing.T) {
 	require.NoError(t, err)
 
 	// Second Apply — status docs exist but with old timestamps → stale.
-	status, err = c.Apply(ctx, testMCName, testClusterID, manifests)
+	status, err = c.Apply(ctx, testMCName, testGroupKey, manifests)
 	require.NoError(t, err)
 	assert.True(t, status.Stale, "should be stale when ObservedDesireUpdateTime is old")
 
 	// Now simulate kube-applier-gcp catching up: update status docs with the
 	// current spec write timestamps. We need to read the spec UpdateTime.
 	applySnaps, err = specsClient.Collection("applydesires").
-		Where("spec.clusterID", "==", testClusterID).
+		Where("spec.groupKey", "==", testGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	require.Len(t, applySnaps, 1)
@@ -563,7 +567,7 @@ func TestIntegration_Apply_StaleWhenStatusNotProcessed(t *testing.T) {
 	require.NoError(t, err)
 
 	readSnaps, err = specsClient.Collection("readdesires").
-		Where("spec.clusterID", "==", testClusterID).
+		Where("spec.groupKey", "==", testGroupKey).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 	require.Len(t, readSnaps, 1)
@@ -577,7 +581,7 @@ func TestIntegration_Apply_StaleWhenStatusNotProcessed(t *testing.T) {
 	require.NoError(t, err)
 
 	// Third Apply — same manifests, status timestamps now match → not stale.
-	status, err = c.Apply(ctx, testMCName, testClusterID, manifests)
+	status, err = c.Apply(ctx, testMCName, testGroupKey, manifests)
 	require.NoError(t, err)
 	assert.False(t, status.Stale, "should not be stale when ObservedDesireUpdateTime matches")
 }
@@ -609,12 +613,8 @@ func npManifestNS(t *testing.T, ns, name string) []byte {
 }
 
 // TestIntegration_Regression_HCCollision is a regression test for GCP-1153.
-// This test fails until groupKey is used as the Firestore query predicate.
-//
-// It proves that two HostedClusters with the same name in different Kubernetes
-// namespaces collide when both pass the bare cluster name as clusterID: Delete
-// for ns-alpha also removes ns-beta's Desires because both share the same
-// spec.clusterID query key.
+// Two HostedClusters with the same name in different namespaces must not
+// interfere: deleting ns-alpha's cluster must leave ns-beta's Desires intact.
 func TestIntegration_Regression_HCCollision(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -634,33 +634,26 @@ func TestIntegration_Regression_HCCollision(t *testing.T) {
 	defer clearCollection(ctx, t, specsClient, "deletedesires")
 
 	const clusterName = "my-cluster"
-
-	// Buggy behaviour: both namespaces use the bare cluster name as the clusterID.
-	// After the fix callers pass "projects/ns-alpha/clusters/my-cluster" and
-	// "projects/ns-beta/clusters/my-cluster" as distinct groupKeys instead.
-	_, err = c.Apply(ctx, testMCName, clusterName, [][]byte{hcManifestNS(t, "ns-alpha", clusterName)})
+	gkAlpha, err := transport.ClusterGroupKey("ns-alpha", clusterName)
 	require.NoError(t, err)
-	_, err = c.Apply(ctx, testMCName, clusterName, [][]byte{hcManifestNS(t, "ns-beta", clusterName)})
+	gkBeta, err := transport.ClusterGroupKey("ns-beta", clusterName)
 	require.NoError(t, err)
 
-	// Capture ns-beta's ApplyDesire ref before the Delete.
+	_, err = c.Apply(ctx, testMCName, gkAlpha, [][]byte{hcManifestNS(t, "ns-alpha", clusterName)})
+	require.NoError(t, err)
+	_, err = c.Apply(ctx, testMCName, gkBeta, [][]byte{hcManifestNS(t, "ns-beta", clusterName)})
+	require.NoError(t, err)
+
+	// Capture ns-beta's ApplyDesire ref before deleting ns-alpha.
 	snaps, err := specsClient.Collection("applydesires").
-		Where("spec.clusterID", "==", clusterName).
+		Where("spec.groupKey", "==", gkBeta).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
+	require.Len(t, snaps, 1, "expected exactly one ApplyDesire for ns-beta")
+	nsBetaRef := snaps[0].Ref
 
-	var nsBetaRef *firestore.DocumentRef
-	for _, snap := range snaps {
-		var desire kubeapplier.ApplyDesire
-		require.NoError(t, snap.DataTo(&desire))
-		if desire.Spec.TargetItem.Namespace == "ns-beta" {
-			nsBetaRef = snap.Ref
-		}
-	}
-	require.NotNil(t, nsBetaRef, "expected an ApplyDesire for ns-beta before Delete")
-
-	// Delete ns-alpha's cluster. With the bug this also deletes ns-beta's Desires.
-	err = c.Delete(ctx, testMCName, clusterName)
+	// Delete ns-alpha's cluster — must not touch ns-beta's Desires.
+	err = c.Delete(ctx, testMCName, gkAlpha)
 	require.NoError(t, err)
 
 	nsBetaSnap, err := nsBetaRef.Get(ctx)
@@ -669,11 +662,8 @@ func TestIntegration_Regression_HCCollision(t *testing.T) {
 }
 
 // TestIntegration_Regression_NodePoolCollision is a regression test for GCP-1153.
-// This test fails until groupKey is used as the Firestore query predicate.
-//
-// It proves that two NodePools with the same name in different namespace/cluster
-// scopes collide when both pass the bare NodePool name as the clusterID: Delete
-// for the first NodePool removes the second NodePool's Desires as well.
+// Two NodePools with the same name in different namespace/cluster scopes must not
+// interfere: deleting ns-alpha's NodePool must leave ns-beta's Desires intact.
 func TestIntegration_Regression_NodePoolCollision(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -693,35 +683,26 @@ func TestIntegration_Regression_NodePoolCollision(t *testing.T) {
 	defer clearCollection(ctx, t, specsClient, "deletedesires")
 
 	const npName = "workers"
-
-	// Buggy behaviour: both NodePools use the bare nodepool name as the clusterID.
-	// After the fix callers pass distinct groupKeys such as
-	// "projects/ns-alpha/clusters/cluster-a/nodepools/workers" and
-	// "projects/ns-beta/clusters/cluster-b/nodepools/workers".
-	_, err = c.Apply(ctx, testMCName, npName, [][]byte{npManifestNS(t, "ns-alpha", npName)})
+	gkAlpha, err := transport.NodePoolGroupKey("ns-alpha", "cluster-a", npName)
 	require.NoError(t, err)
-	_, err = c.Apply(ctx, testMCName, npName, [][]byte{npManifestNS(t, "ns-beta", npName)})
+	gkBeta, err := transport.NodePoolGroupKey("ns-beta", "cluster-b", npName)
 	require.NoError(t, err)
 
-	// Capture ns-beta's ApplyDesire ref before Delete.
+	_, err = c.Apply(ctx, testMCName, gkAlpha, [][]byte{npManifestNS(t, "ns-alpha", npName)})
+	require.NoError(t, err)
+	_, err = c.Apply(ctx, testMCName, gkBeta, [][]byte{npManifestNS(t, "ns-beta", npName)})
+	require.NoError(t, err)
+
+	// Capture ns-beta's ApplyDesire ref before deleting ns-alpha's NodePool.
 	snaps, err := specsClient.Collection("applydesires").
-		Where("spec.clusterID", "==", npName).
+		Where("spec.groupKey", "==", gkBeta).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
+	require.Len(t, snaps, 1, "expected exactly one ApplyDesire for ns-beta")
+	nsBetaRef := snaps[0].Ref
 
-	var nsBetaRef *firestore.DocumentRef
-	for _, snap := range snaps {
-		var desire kubeapplier.ApplyDesire
-		require.NoError(t, snap.DataTo(&desire))
-		if desire.Spec.TargetItem.Namespace == "ns-beta" {
-			nsBetaRef = snap.Ref
-		}
-	}
-	require.NotNil(t, nsBetaRef, "expected an ApplyDesire for ns-beta before Delete")
-
-	// Delete the first NodePool (ns-alpha). With the bug, this wipes ALL
-	// ApplyDesires sharing clusterID="workers", including ns-beta's.
-	err = c.Delete(ctx, testMCName, npName)
+	// Delete ns-alpha's NodePool — must not touch ns-beta's Desires.
+	err = c.Delete(ctx, testMCName, gkAlpha)
 	require.NoError(t, err)
 
 	nsBetaSnap, err := nsBetaRef.Get(ctx)
@@ -751,7 +732,7 @@ func TestIntegration_GetStatus_NeverStale(t *testing.T) {
 	defer clearCollection(ctx, t, statusClient, "applydesires")
 
 	const docID = "doc-getstatus"
-	_, err = specsClient.Collection("applydesires").Doc(docID).Set(ctx, specsApplyDesire(testClusterID, "my-hc"))
+	_, err = specsClient.Collection("applydesires").Doc(docID).Set(ctx, specsApplyDesire(testGroupKey, "my-hc"))
 	require.NoError(t, err)
 
 	_, err = statusClient.Collection("applydesires").Doc(docID).Set(ctx, statusApplyDesire([]metav1.Condition{
@@ -759,7 +740,7 @@ func TestIntegration_GetStatus_NeverStale(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	status, err := c.GetStatus(ctx, testMCName, testClusterID)
+	status, err := c.GetStatus(ctx, testMCName, testGroupKey)
 	require.NoError(t, err)
 	assert.False(t, status.Stale, "GetStatus without Apply should never report stale")
 }
