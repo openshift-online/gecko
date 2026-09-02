@@ -109,7 +109,7 @@ func (c *Client) clients(ctx context.Context, mcName string) (*mcClients, error)
 // Apply decomposes the manifests into individual resources and writes one
 // ApplyDesire + one ReadDesire document per resource to the specs DB.
 // Returns the current status by calling GetStatus after writing.
-func (c *Client) Apply(ctx context.Context, targetCluster, clusterID string, manifests [][]byte) (*transport.Status, error) {
+func (c *Client) Apply(ctx context.Context, targetCluster, groupKey string, manifests [][]byte) (*transport.Status, error) {
 	mc, err := c.clients(ctx, targetCluster)
 	if err != nil {
 		return nil, err
@@ -131,30 +131,30 @@ func (c *Client) Apply(ctx context.Context, targetCluster, clusterID string, man
 
 		ref, unknownKind, err := parseManifest(raw)
 		if err != nil {
-			return nil, fmt.Errorf("firestore transport: Apply %s/%s: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: Apply %s/%s: %w", targetCluster, groupKey, err)
 		}
 		if unknownKind {
-			c.log.Infof(ctx, "firestore transport: Apply %s/%s: unknown Kind for resource %s/%s — using fallback pluralization, add it to kindToResource if incorrect", targetCluster, clusterID, ref.Namespace, ref.Name)
+			c.log.Infof(ctx, "firestore transport: Apply %s/%s: unknown Kind for resource %s/%s — using fallback pluralization, add it to kindToResource if incorrect", targetCluster, groupKey, ref.Namespace, ref.Name)
 		}
 
 		// Write ApplyDesire
-		applyID, applyData, err := buildApplyDesireDoc(clusterID, targetCluster, ref, raw)
+		applyID, applyData, err := buildApplyDesireDoc(groupKey, targetCluster, ref, raw)
 		if err != nil {
-			return nil, fmt.Errorf("firestore transport: Apply %s/%s build apply desire: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: Apply %s/%s build apply desire: %w", targetCluster, groupKey, err)
 		}
 		applyRef := mc.specs.Collection(collectionApplyDesires).Doc(applyID)
 		job, err := batch.Set(applyRef, applyData)
 		if err != nil {
-			return nil, fmt.Errorf("firestore transport: Apply %s/%s set apply desire: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: Apply %s/%s set apply desire: %w", targetCluster, groupKey, err)
 		}
 		applyDocs = append(applyDocs, writtenDoc{docID: applyID, job: job})
 
 		// Write ReadDesire
-		readID, readData := buildReadDesireDoc(clusterID, targetCluster, ref)
+		readID, readData := buildReadDesireDoc(groupKey, targetCluster, ref)
 		readRef := mc.specs.Collection(collectionReadDesires).Doc(readID)
 		job, err = batch.Set(readRef, readData)
 		if err != nil {
-			return nil, fmt.Errorf("firestore transport: Apply %s/%s set read desire: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: Apply %s/%s set read desire: %w", targetCluster, groupKey, err)
 		}
 		readDocs = append(readDocs, writtenDoc{docID: readID, job: job})
 	}
@@ -166,53 +166,53 @@ func (c *Client) Apply(ctx context.Context, targetCluster, clusterID string, man
 	for _, wd := range applyDocs {
 		wr, err := wd.job.Results()
 		if err != nil {
-			return nil, fmt.Errorf("firestore transport: Apply %s/%s write error: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: Apply %s/%s write error: %w", targetCluster, groupKey, err)
 		}
 		writeTimes[collectionApplyDesires+"/"+wd.docID] = wr.UpdateTime
 	}
 	for _, wd := range readDocs {
 		wr, err := wd.job.Results()
 		if err != nil {
-			return nil, fmt.Errorf("firestore transport: Apply %s/%s write error: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: Apply %s/%s write error: %w", targetCluster, groupKey, err)
 		}
 		writeTimes[collectionReadDesires+"/"+wd.docID] = wr.UpdateTime
 	}
 
-	c.log.Infof(ctx, "firestore transport: applied %d manifests for %s/%s", len(manifests), targetCluster, clusterID)
+	c.log.Infof(ctx, "firestore transport: applied %d manifests for %s/%s", len(manifests), targetCluster, groupKey)
 
-	return c.getStatus(ctx, targetCluster, clusterID, writeTimes)
+	return c.getStatus(ctx, targetCluster, groupKey, writeTimes)
 }
 
-// GetStatus looks up document IDs from the specs DB by clusterID, then fetches
+// GetStatus looks up document IDs from the specs DB by groupKey, then fetches
 // the corresponding status documents from the status DB by document ID.
 // This two-step approach is needed because kube-applier-gcp does not copy the
 // spec fields into the status DB — only the document IDs match across DBs.
-func (c *Client) GetStatus(ctx context.Context, targetCluster, clusterID string) (*transport.Status, error) {
-	return c.getStatus(ctx, targetCluster, clusterID, nil)
+func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) (*transport.Status, error) {
+	return c.getStatus(ctx, targetCluster, groupKey, nil)
 }
 
 // getStatus is the internal implementation of GetStatus. When specWriteTimes is
 // non-nil (i.e. called from Apply), each desire's ObservedDesireUpdateTime is
 // compared against the write timestamp to detect stale status.
-func (c *Client) getStatus(ctx context.Context, targetCluster, clusterID string, specWriteTimes map[string]time.Time) (*transport.Status, error) {
+func (c *Client) getStatus(ctx context.Context, targetCluster, groupKey string, specWriteTimes map[string]time.Time) (*transport.Status, error) {
 	mc, err := c.clients(ctx, targetCluster)
 	if err != nil {
 		return nil, err
 	}
 
-	// Step 1: Query specs DB to discover document IDs for this clusterID.
+	// Step 1: Query specs DB to discover document IDs for this groupKey.
 	specsApplySnaps, err := mc.specs.Collection(collectionApplyDesires).
-		Where("spec.clusterID", "==", clusterID).
+		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s query specs apply desires: %w", targetCluster, clusterID, err)
+		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s query specs apply desires: %w", targetCluster, groupKey, err)
 	}
 
 	specsReadSnaps, err := mc.specs.Collection(collectionReadDesires).
-		Where("spec.clusterID", "==", clusterID).
+		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s query specs read desires: %w", targetCluster, clusterID, err)
+		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s query specs read desires: %w", targetCluster, groupKey, err)
 	}
 
 	// Step 2: Fetch the corresponding documents from the status DB by ID.
@@ -228,13 +228,13 @@ func (c *Client) getStatus(ctx context.Context, targetCluster, clusterID string,
 		}
 		statusApplySnaps, err := mc.status.GetAll(ctx, applyRefs)
 		if err != nil {
-			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s fetch status apply desires: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s fetch status apply desires: %w", targetCluster, groupKey, err)
 		}
 		for i, snap := range statusApplySnaps {
 			// Spec from status DB is empty — use the spec from the specs DB.
 			var specsAD kubeapplier.ApplyDesire
 			if err := specsApplySnaps[i].DataTo(&specsAD); err != nil {
-				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode specs apply desire %s: %w", targetCluster, clusterID, specsApplySnaps[i].Ref.ID, err)
+				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode specs apply desire %s: %w", targetCluster, groupKey, specsApplySnaps[i].Ref.ID, err)
 			}
 			if !snap.Exists() {
 				// kube-applier-gcp has not created the status doc yet; report it as pending.
@@ -244,7 +244,7 @@ func (c *Client) getStatus(ctx context.Context, targetCluster, clusterID string,
 			}
 			var ad kubeapplier.ApplyDesire
 			if err := snap.DataTo(&ad); err != nil {
-				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode apply desire %s: %w", targetCluster, clusterID, snap.Ref.ID, err)
+				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode apply desire %s: %w", targetCluster, groupKey, snap.Ref.ID, err)
 			}
 			ad.Spec = specsAD.Spec
 			// Check staleness: compare write timestamp against ObservedDesireUpdateTime.
@@ -265,13 +265,13 @@ func (c *Client) getStatus(ctx context.Context, targetCluster, clusterID string,
 		}
 		statusReadSnaps, err := mc.status.GetAll(ctx, readRefs)
 		if err != nil {
-			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s fetch status read desires: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s fetch status read desires: %w", targetCluster, groupKey, err)
 		}
 		for i, snap := range statusReadSnaps {
 			// Spec from status DB is empty — use the spec from the specs DB.
 			var specsRD kubeapplier.ReadDesire
 			if err := specsReadSnaps[i].DataTo(&specsRD); err != nil {
-				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode specs read desire %s: %w", targetCluster, clusterID, specsReadSnaps[i].Ref.ID, err)
+				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode specs read desire %s: %w", targetCluster, groupKey, specsReadSnaps[i].Ref.ID, err)
 			}
 			if !snap.Exists() {
 				// kube-applier-gcp has not created the status doc yet; report it as pending.
@@ -281,7 +281,7 @@ func (c *Client) getStatus(ctx context.Context, targetCluster, clusterID string,
 			}
 			var rd kubeapplier.ReadDesire
 			if err := snap.DataTo(&rd); err != nil {
-				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode read desire %s: %w", targetCluster, clusterID, snap.Ref.ID, err)
+				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode read desire %s: %w", targetCluster, groupKey, snap.Ref.ID, err)
 			}
 			rd.Spec = specsRD.Spec
 			// Check staleness: compare write timestamp against ObservedDesireUpdateTime.
@@ -304,7 +304,7 @@ func (c *Client) getStatus(ctx context.Context, targetCluster, clusterID string,
 
 	resourceStatuses, err := extractResourceStatuses(readDesires)
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s: %w", targetCluster, clusterID, err)
+		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s: %w", targetCluster, groupKey, err)
 	}
 
 	return &transport.Status{
@@ -318,22 +318,22 @@ func (c *Client) getStatus(ctx context.Context, targetCluster, clusterID string,
 // corresponding ApplyDesire and ReadDesire documents from the specs DB.
 // Resources are processed in batches to stay within Firestore's
 // 500-write-per-transaction limit.
-func (c *Client) Delete(ctx context.Context, targetCluster, clusterID string) error {
+func (c *Client) Delete(ctx context.Context, targetCluster, groupKey string) error {
 	mc, err := c.clients(ctx, targetCluster)
 	if err != nil {
 		return err
 	}
 
-	// Query all ApplyDesires for this clusterID.
+	// Query all ApplyDesires for this groupKey.
 	applySnaps, err := mc.specs.Collection(collectionApplyDesires).
-		Where("spec.clusterID", "==", clusterID).
+		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return fmt.Errorf("firestore transport: Delete %s/%s query apply desires: %w", targetCluster, clusterID, err)
+		return fmt.Errorf("firestore transport: Delete %s/%s query apply desires: %w", targetCluster, groupKey, err)
 	}
 
 	if len(applySnaps) == 0 {
-		c.log.Infof(ctx, "firestore transport: Delete %s/%s: no apply desires found, nothing to delete", targetCluster, clusterID)
+		c.log.Infof(ctx, "firestore transport: Delete %s/%s: no apply desires found, nothing to delete", targetCluster, groupKey)
 		return nil
 	}
 
@@ -384,16 +384,16 @@ func (c *Client) Delete(ctx context.Context, targetCluster, clusterID string) er
 	}
 
 	if len(errs) > 0 {
-		return fmt.Errorf("firestore transport: Delete %s/%s: %d chunk(s) failed: %w", targetCluster, clusterID, len(errs), errors.Join(errs...))
+		return fmt.Errorf("firestore transport: Delete %s/%s: %d chunk(s) failed: %w", targetCluster, groupKey, len(errs), errors.Join(errs...))
 	}
 
-	c.log.Infof(ctx, "firestore transport: deleted %d resources for %s/%s", len(applySnaps), targetCluster, clusterID)
+	c.log.Infof(ctx, "firestore transport: deleted %d resources for %s/%s", len(applySnaps), targetCluster, groupKey)
 	return nil
 }
 
-// GetDeleteStatus queries all DeleteDesire documents for the given clusterID
+// GetDeleteStatus queries all DeleteDesire documents for the given groupKey
 // and checks if all have Successful=True condition.
-func (c *Client) GetDeleteStatus(ctx context.Context, targetCluster, clusterID string) (*transport.DeleteStatus, error) {
+func (c *Client) GetDeleteStatus(ctx context.Context, targetCluster, groupKey string) (*transport.DeleteStatus, error) {
 	mc, err := c.clients(ctx, targetCluster)
 	if err != nil {
 		return nil, err
@@ -401,18 +401,18 @@ func (c *Client) GetDeleteStatus(ctx context.Context, targetCluster, clusterID s
 
 	// Query all DeleteDesires from specs DB.
 	specsSnaps, err := mc.specs.Collection(collectionDeleteDesires).
-		Where("spec.clusterID", "==", clusterID).
+		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s query specs: %w", targetCluster, clusterID, err)
+		return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s query specs: %w", targetCluster, groupKey, err)
 	}
 
 	// Also query ApplyDesires to distinguish "never started" from "completed".
 	applySnaps, err := mc.specs.Collection(collectionApplyDesires).
-		Where("spec.clusterID", "==", clusterID).
+		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s query apply desires: %w", targetCluster, clusterID, err)
+		return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s query apply desires: %w", targetCluster, groupKey, err)
 	}
 
 	if len(specsSnaps) == 0 {
@@ -434,7 +434,7 @@ func (c *Client) GetDeleteStatus(ctx context.Context, targetCluster, clusterID s
 	}
 	statusSnaps, err := mc.status.GetAll(ctx, statusRefs)
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s fetch status: %w", targetCluster, clusterID, err)
+		return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s fetch status: %w", targetCluster, groupKey, err)
 	}
 
 	pending := 0
@@ -446,7 +446,7 @@ func (c *Client) GetDeleteStatus(ctx context.Context, targetCluster, clusterID s
 		}
 		var dd kubeapplier.DeleteDesire
 		if err := snap.DataTo(&dd); err != nil {
-			return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s decode: %w", targetCluster, clusterID, err)
+			return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s decode: %w", targetCluster, groupKey, err)
 		}
 		// Check for Successful=True condition.
 		successful := false
@@ -469,9 +469,9 @@ func (c *Client) GetDeleteStatus(ctx context.Context, targetCluster, clusterID s
 	}, nil
 }
 
-// CleanupDeleteDesires removes all DeleteDesire documents for the given clusterID
+// CleanupDeleteDesires removes all DeleteDesire documents for the given groupKey
 // from both specs and status DBs.
-func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, clusterID string) error {
+func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, groupKey string) error {
 	mc, err := c.clients(ctx, targetCluster)
 	if err != nil {
 		return err
@@ -479,14 +479,14 @@ func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, cluste
 
 	// Query DeleteDesires from specs DB.
 	snaps, err := mc.specs.Collection(collectionDeleteDesires).
-		Where("spec.clusterID", "==", clusterID).
+		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s query: %w", targetCluster, clusterID, err)
+		return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s query: %w", targetCluster, groupKey, err)
 	}
 
 	if len(snaps) == 0 {
-		c.log.Infof(ctx, "firestore transport: CleanupDeleteDesires %s/%s: no delete desires found", targetCluster, clusterID)
+		c.log.Infof(ctx, "firestore transport: CleanupDeleteDesires %s/%s: no delete desires found", targetCluster, groupKey)
 		return nil
 	}
 
@@ -502,7 +502,7 @@ func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, cluste
 		// Delete from specs DB.
 		job, err := specsBatch.Delete(snap.Ref)
 		if err != nil {
-			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s delete specs: %w", targetCluster, clusterID, err)
+			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s delete specs: %w", targetCluster, groupKey, err)
 		}
 		specsJobs = append(specsJobs, job)
 
@@ -510,7 +510,7 @@ func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, cluste
 		statusRef := mc.status.Collection(collectionDeleteDesires).Doc(snap.Ref.ID)
 		job, err = statusBatch.Delete(statusRef)
 		if err != nil {
-			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s delete status: %w", targetCluster, clusterID, err)
+			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s delete status: %w", targetCluster, groupKey, err)
 		}
 		statusJobs = append(statusJobs, job)
 	}
@@ -521,16 +521,16 @@ func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, cluste
 	// Check job results.
 	for _, job := range specsJobs {
 		if _, err := job.Results(); err != nil {
-			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s specs write error: %w", targetCluster, clusterID, err)
+			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s specs write error: %w", targetCluster, groupKey, err)
 		}
 	}
 	for _, job := range statusJobs {
 		if _, err := job.Results(); err != nil {
-			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s status write error: %w", targetCluster, clusterID, err)
+			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s status write error: %w", targetCluster, groupKey, err)
 		}
 	}
 
-	c.log.Infof(ctx, "firestore transport: cleaned up %d delete desires for %s/%s", len(snaps), targetCluster, clusterID)
+	c.log.Infof(ctx, "firestore transport: cleaned up %d delete desires for %s/%s", len(snaps), targetCluster, groupKey)
 	return nil
 }
 

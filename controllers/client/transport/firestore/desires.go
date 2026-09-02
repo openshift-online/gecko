@@ -98,6 +98,7 @@ func buildApplyDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceReferen
 		"spec": kubeapplier.ApplyDesireSpec{
 			ManagementCluster: mcName,
 			ClusterID:         taskKey,
+			GroupKey:          taskKey,
 			TargetItem:        ref,
 			KubeContent:       nil, // stored separately as spec_kubeContent
 		},
@@ -115,6 +116,7 @@ func buildReadDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceReferenc
 		"spec": kubeapplier.ReadDesireSpec{
 			ManagementCluster: mcName,
 			ClusterID:         taskKey,
+			GroupKey:          taskKey,
 			TargetItem:        ref,
 		},
 		"status": kubeapplier.ReadDesireStatus{},
@@ -129,6 +131,7 @@ func buildDeleteDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceRefere
 		"spec": kubeapplier.DeleteDesireSpec{
 			ManagementCluster: mcName,
 			ClusterID:         taskKey,
+			GroupKey:          taskKey,
 			TargetItem:        ref,
 		},
 		"status": kubeapplier.DeleteDesireStatus{},
