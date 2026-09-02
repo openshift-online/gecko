@@ -582,12 +582,39 @@ func TestIntegration_Apply_StaleWhenStatusNotProcessed(t *testing.T) {
 	assert.False(t, status.Stale, "should not be stale when ObservedDesireUpdateTime matches")
 }
 
+// hcManifestNS builds a HostedCluster manifest with an explicit namespace,
+// used in collision regression tests where the namespace is not derived from clusterID.
+func hcManifestNS(t *testing.T, ns, name string) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"apiVersion": "hypershift.openshift.io/v1beta1",
+		"kind":       "HostedCluster",
+		"metadata":   map[string]any{"name": name, "namespace": ns},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
+// npManifestNS builds a NodePool manifest with an explicit namespace,
+// used in collision regression tests where the namespace is not derived from clusterID.
+func npManifestNS(t *testing.T, ns, name string) []byte {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"apiVersion": "hypershift.openshift.io/v1beta1",
+		"kind":       "NodePool",
+		"metadata":   map[string]any{"name": name, "namespace": ns},
+	})
+	require.NoError(t, err)
+	return raw
+}
+
 // TestIntegration_Regression_HCCollision is a regression test for GCP-1153.
 // This test fails until groupKey is used as the Firestore query predicate.
 //
-// It proves that two HostedClusters with the same name in different namespaces
-// collide when both pass the bare cluster name as the clusterID: Apply from the
-// second namespace overwrites the ApplyDesires written by the first.
+// It proves that two HostedClusters with the same name in different Kubernetes
+// namespaces collide when both pass the bare cluster name as clusterID: Delete
+// for ns-alpha also removes ns-beta's Desires because both share the same
+// spec.clusterID query key.
 func TestIntegration_Regression_HCCollision(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -601,56 +628,44 @@ func TestIntegration_Regression_HCCollision(t *testing.T) {
 
 	clearCollection(ctx, t, specsClient, "applydesires")
 	clearCollection(ctx, t, specsClient, "readdesires")
+	clearCollection(ctx, t, specsClient, "deletedesires")
 	defer clearCollection(ctx, t, specsClient, "applydesires")
 	defer clearCollection(ctx, t, specsClient, "readdesires")
+	defer clearCollection(ctx, t, specsClient, "deletedesires")
 
 	const clusterName = "my-cluster"
 
-	// hcManifestNS builds an HC manifest with an explicit namespace rather than
-	// deriving it from clusterID, so we can simulate the two-namespace scenario.
-	hcManifestNS := func(ns, name string) []byte {
-		raw, jsonErr := json.Marshal(map[string]any{
-			"apiVersion": "hypershift.openshift.io/v1beta1",
-			"kind":       "HostedCluster",
-			"metadata":   map[string]any{"name": name, "namespace": ns},
-		})
-		require.NoError(t, jsonErr)
-		return raw
-	}
-
 	// Buggy behaviour: both namespaces use the bare cluster name as the clusterID.
-	// After the fix the caller will pass "projects/ns-alpha/clusters/my-cluster"
-	// and "projects/ns-beta/clusters/my-cluster" as distinct groupKeys instead.
-	_, err = c.Apply(ctx, testMCName, clusterName, [][]byte{
-		hcManifestNS("ns-alpha", clusterName),
-	})
+	// After the fix callers pass "projects/ns-alpha/clusters/my-cluster" and
+	// "projects/ns-beta/clusters/my-cluster" as distinct groupKeys instead.
+	_, err = c.Apply(ctx, testMCName, clusterName, [][]byte{hcManifestNS(t, "ns-alpha", clusterName)})
+	require.NoError(t, err)
+	_, err = c.Apply(ctx, testMCName, clusterName, [][]byte{hcManifestNS(t, "ns-beta", clusterName)})
 	require.NoError(t, err)
 
-	_, err = c.Apply(ctx, testMCName, clusterName, [][]byte{
-		hcManifestNS("ns-beta", clusterName),
-	})
-	require.NoError(t, err)
-
-	// Both namespaces must have an ApplyDesire; with the bug only 1 survives.
+	// Capture ns-beta's ApplyDesire ref before the Delete.
 	snaps, err := specsClient.Collection("applydesires").
 		Where("spec.clusterID", "==", clusterName).
 		Documents(ctx).GetAll()
 	require.NoError(t, err)
 
-	var nsAlphaFound, nsBetaFound bool
+	var nsBetaRef *firestore.DocumentRef
 	for _, snap := range snaps {
 		var desire kubeapplier.ApplyDesire
 		require.NoError(t, snap.DataTo(&desire))
-		switch desire.Spec.TargetItem.Namespace {
-		case "ns-alpha":
-			nsAlphaFound = true
-		case "ns-beta":
-			nsBetaFound = true
+		if desire.Spec.TargetItem.Namespace == "ns-beta" {
+			nsBetaRef = snap.Ref
 		}
 	}
+	require.NotNil(t, nsBetaRef, "expected an ApplyDesire for ns-beta before Delete")
 
-	require.True(t, nsAlphaFound, "ApplyDesire for ns-alpha must survive after ns-beta Apply — bug: clusterID collision overwrites it")
-	require.True(t, nsBetaFound, "ApplyDesire for ns-beta must be present")
+	// Delete ns-alpha's cluster. With the bug this also deletes ns-beta's Desires.
+	err = c.Delete(ctx, testMCName, clusterName)
+	require.NoError(t, err)
+
+	nsBetaSnap, err := nsBetaRef.Get(ctx)
+	require.NoError(t, err, "deleting ns-alpha cluster must not delete ns-beta's ApplyDesire")
+	require.True(t, nsBetaSnap.Exists(), "ns-beta ApplyDesire must still exist after ns-alpha cluster Delete")
 }
 
 // TestIntegration_Regression_NodePoolCollision is a regression test for GCP-1153.
@@ -658,7 +673,7 @@ func TestIntegration_Regression_HCCollision(t *testing.T) {
 //
 // It proves that two NodePools with the same name in different namespace/cluster
 // scopes collide when both pass the bare NodePool name as the clusterID: Delete
-// for the first NodePool removes the second NodePool's ApplyDesires as well.
+// for the first NodePool removes the second NodePool's Desires as well.
 func TestIntegration_Regression_NodePoolCollision(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -679,32 +694,16 @@ func TestIntegration_Regression_NodePoolCollision(t *testing.T) {
 
 	const npName = "workers"
 
-	// npManifestNS builds a NodePool manifest with an explicit namespace.
-	npManifestNS := func(ns, name string) []byte {
-		raw, jsonErr := json.Marshal(map[string]any{
-			"apiVersion": "hypershift.openshift.io/v1beta1",
-			"kind":       "NodePool",
-			"metadata":   map[string]any{"name": name, "namespace": ns},
-		})
-		require.NoError(t, jsonErr)
-		return raw
-	}
-
-	// Buggy behaviour: both NodePools use the bare node pool name as the clusterID.
-	// After the fix the caller will pass distinct groupKeys such as
+	// Buggy behaviour: both NodePools use the bare nodepool name as the clusterID.
+	// After the fix callers pass distinct groupKeys such as
 	// "projects/ns-alpha/clusters/cluster-a/nodepools/workers" and
 	// "projects/ns-beta/clusters/cluster-b/nodepools/workers".
-	_, err = c.Apply(ctx, testMCName, npName, [][]byte{
-		npManifestNS("ns-alpha", npName),
-	})
+	_, err = c.Apply(ctx, testMCName, npName, [][]byte{npManifestNS(t, "ns-alpha", npName)})
+	require.NoError(t, err)
+	_, err = c.Apply(ctx, testMCName, npName, [][]byte{npManifestNS(t, "ns-beta", npName)})
 	require.NoError(t, err)
 
-	_, err = c.Apply(ctx, testMCName, npName, [][]byte{
-		npManifestNS("ns-beta", npName),
-	})
-	require.NoError(t, err)
-
-	// Capture a reference to the ns-beta ApplyDesire before Delete is called.
+	// Capture ns-beta's ApplyDesire ref before Delete.
 	snaps, err := specsClient.Collection("applydesires").
 		Where("spec.clusterID", "==", npName).
 		Documents(ctx).GetAll()
@@ -720,14 +719,13 @@ func TestIntegration_Regression_NodePoolCollision(t *testing.T) {
 	}
 	require.NotNil(t, nsBetaRef, "expected an ApplyDesire for ns-beta before Delete")
 
-	// Delete the first NodePool (ns-alpha / cluster-a). With the bug, this wipes
-	// ALL ApplyDesires sharing clusterID="workers", including ns-beta's.
+	// Delete the first NodePool (ns-alpha). With the bug, this wipes ALL
+	// ApplyDesires sharing clusterID="workers", including ns-beta's.
 	err = c.Delete(ctx, testMCName, npName)
 	require.NoError(t, err)
 
-	// ns-beta's ApplyDesire must still exist after deleting ns-alpha's NodePool.
 	nsBetaSnap, err := nsBetaRef.Get(ctx)
-	require.NoError(t, err, "deleting ns-alpha NodePool must not delete ns-beta's ApplyDesire — bug: clusterID collision removes it")
+	require.NoError(t, err, "deleting ns-alpha NodePool must not delete ns-beta's ApplyDesire")
 	require.True(t, nsBetaSnap.Exists(), "ns-beta ApplyDesire must still exist after ns-alpha NodePool Delete")
 }
 

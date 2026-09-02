@@ -105,3 +105,5 @@ require (
 replace github.com/openshift-online/gecko/platform-api => ../platform-api
 
 replace github.com/openshift-online/gecko/orlop => ../orlop
+
+replace github.com/openshift-online/kube-applier-gcp => /home/cveiga/go/src/github.com/openshift-online/kube-applier-gcp
