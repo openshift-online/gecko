@@ -71,7 +71,21 @@ terminationGracePeriodSeconds: 30
 
 nodeSelector: {}
 tolerations: []
+
+# affinity allows full override of the pod affinity/anti-affinity spec.
+# When left empty the chart applies the default anti-affinity rules below.
 affinity: {}
+
+# podAntiAffinity configures the default anti-affinity rules applied when
+# affinity is not overridden. Set topologyKeys to empty strings to disable
+# the corresponding rule.
+podAntiAffinity:
+  # requiredTopologyKey spreads replicas across nodes (hard constraint).
+  # Set to "" to disable.
+  requiredTopologyKey: kubernetes.io/hostname
+  # preferredTopologyKey spreads replicas across GCP zones (soft constraint).
+  # Set to "" to disable.
+  preferredTopologyKey: topology.kubernetes.io/zone
 
 podAnnotations: {}
 podLabels: {}
