@@ -96,8 +96,8 @@ func (c *Client) clients(ctx context.Context, mcName string) (*mcClients, error)
 	// Re-check after acquiring write lock — another goroutine may have populated
 	// the cache while we were dialing. Close the duplicate pair if so.
 	if mc, ok := c.cache[mcName]; ok {
-		specsClient.Close()   //nolint:errcheck
-		statusClient.Close()  //nolint:errcheck
+		specsClient.Close()  //nolint:errcheck
+		statusClient.Close() //nolint:errcheck
 		return mc, nil
 	}
 
@@ -183,10 +183,7 @@ func (c *Client) Apply(ctx context.Context, targetCluster, groupKey string, mani
 	return c.getStatus(ctx, targetCluster, groupKey, writeTimes)
 }
 
-// GetStatus looks up document IDs from the specs DB by groupKey, then fetches
-// the corresponding status documents from the status DB by document ID.
-// This two-step approach is needed because kube-applier-gcp does not copy the
-// spec fields into the status DB — only the document IDs match across DBs.
+// GetStatus reads ApplyDesire and ReadDesire statuses for the given groupKey.
 func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) (*transport.Status, error) {
 	return c.getStatus(ctx, targetCluster, groupKey, nil)
 }
@@ -200,105 +197,62 @@ func (c *Client) getStatus(ctx context.Context, targetCluster, groupKey string, 
 		return nil, err
 	}
 
-	// Step 1: Query specs DB to discover document IDs for this groupKey.
-	specsApplySnaps, err := mc.specs.Collection(collectionApplyDesires).
+	statusApplySnaps, err := mc.status.Collection(collectionApplyDesires).
 		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s query specs apply desires: %w", targetCluster, groupKey, err)
+		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s query status apply desires: %w", targetCluster, groupKey, err)
 	}
 
-	specsReadSnaps, err := mc.specs.Collection(collectionReadDesires).
+	statusReadSnaps, err := mc.status.Collection(collectionReadDesires).
 		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s query specs read desires: %w", targetCluster, groupKey, err)
+		return nil, fmt.Errorf("firestore transport: GetStatus %s/%s query status read desires: %w", targetCluster, groupKey, err)
 	}
 
-	// Step 2: Fetch the corresponding documents from the status DB by ID.
-	// GetAll preserves input order, so statusSnaps[i] corresponds to specsSnaps[i].
-	// The spec fields in status docs are empty (kube-applier-gcp doesn't copy them),
-	// so we take the spec from the specs DB snapshot instead.
 	stale := false
-	applyDesires := make([]kubeapplier.ApplyDesire, 0, len(specsApplySnaps))
-	if len(specsApplySnaps) > 0 {
-		applyRefs := make([]*firestore.DocumentRef, len(specsApplySnaps))
-		for i, snap := range specsApplySnaps {
-			applyRefs[i] = mc.status.Collection(collectionApplyDesires).Doc(snap.Ref.ID)
+	seenStatuses := make(map[string]struct{}, len(statusApplySnaps)+len(statusReadSnaps))
+	applyDesires := make([]kubeapplier.ApplyDesire, 0, len(statusApplySnaps))
+	for _, snap := range statusApplySnaps {
+		var ad kubeapplier.ApplyDesire
+		if err := snap.DataTo(&ad); err != nil {
+			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode apply desire %s: %w", targetCluster, groupKey, snap.Ref.ID, err)
 		}
-		statusApplySnaps, err := mc.status.GetAll(ctx, applyRefs)
-		if err != nil {
-			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s fetch status apply desires: %w", targetCluster, groupKey, err)
+		key := collectionApplyDesires + "/" + snap.Ref.ID
+		seenStatuses[key] = struct{}{}
+		if wt, ok := specWriteTimes[key]; ok && ad.Status.ObservedDesireUpdateTime.Before(wt) {
+			stale = true
 		}
-		for i, snap := range statusApplySnaps {
-			// Spec from status DB is empty — use the spec from the specs DB.
-			var specsAD kubeapplier.ApplyDesire
-			if err := specsApplySnaps[i].DataTo(&specsAD); err != nil {
-				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode specs apply desire %s: %w", targetCluster, groupKey, specsApplySnaps[i].Ref.ID, err)
-			}
-			if !snap.Exists() {
-				// kube-applier-gcp has not created the status doc yet; report it as pending.
-				applyDesires = append(applyDesires, kubeapplier.ApplyDesire{Spec: specsAD.Spec})
-				stale = stale || specWriteTimes != nil
-				continue
-			}
-			var ad kubeapplier.ApplyDesire
-			if err := snap.DataTo(&ad); err != nil {
-				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode apply desire %s: %w", targetCluster, groupKey, snap.Ref.ID, err)
-			}
-			ad.Spec = specsAD.Spec
-			// Check staleness: compare write timestamp against ObservedDesireUpdateTime.
-			if wt, ok := specWriteTimes[collectionApplyDesires+"/"+specsApplySnaps[i].Ref.ID]; ok {
-				if ad.Status.ObservedDesireUpdateTime.Before(wt) {
-					stale = true
-				}
-			}
-			applyDesires = append(applyDesires, ad)
-		}
+		applyDesires = append(applyDesires, ad)
 	}
 
-	readDesires := make([]kubeapplier.ReadDesire, 0, len(specsReadSnaps))
-	if len(specsReadSnaps) > 0 {
-		readRefs := make([]*firestore.DocumentRef, len(specsReadSnaps))
-		for i, snap := range specsReadSnaps {
-			readRefs[i] = mc.status.Collection(collectionReadDesires).Doc(snap.Ref.ID)
+	readDesires := make([]kubeapplier.ReadDesire, 0, len(statusReadSnaps))
+	for _, snap := range statusReadSnaps {
+		var rd kubeapplier.ReadDesire
+		if err := snap.DataTo(&rd); err != nil {
+			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode read desire %s: %w", targetCluster, groupKey, snap.Ref.ID, err)
 		}
-		statusReadSnaps, err := mc.status.GetAll(ctx, readRefs)
-		if err != nil {
-			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s fetch status read desires: %w", targetCluster, groupKey, err)
+		key := collectionReadDesires + "/" + snap.Ref.ID
+		seenStatuses[key] = struct{}{}
+		if wt, ok := specWriteTimes[key]; ok && rd.Status.ObservedDesireUpdateTime.Before(wt) {
+			stale = true
 		}
-		for i, snap := range statusReadSnaps {
-			// Spec from status DB is empty — use the spec from the specs DB.
-			var specsRD kubeapplier.ReadDesire
-			if err := specsReadSnaps[i].DataTo(&specsRD); err != nil {
-				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode specs read desire %s: %w", targetCluster, groupKey, specsReadSnaps[i].Ref.ID, err)
+		// Manually decode status_kubeContent (stored as map[string]any at doc root).
+		if v, ok := snap.Data()["status_kubeContent"]; ok && v != nil {
+			raw, err := json.Marshal(v)
+			if err != nil {
+				return nil, fmt.Errorf("firestore transport: GetStatus marshal status_kubeContent: %w", err)
 			}
-			if !snap.Exists() {
-				// kube-applier-gcp has not created the status doc yet; report it as pending.
-				readDesires = append(readDesires, kubeapplier.ReadDesire{Spec: specsRD.Spec})
-				stale = stale || specWriteTimes != nil
-				continue
-			}
-			var rd kubeapplier.ReadDesire
-			if err := snap.DataTo(&rd); err != nil {
-				return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode read desire %s: %w", targetCluster, groupKey, snap.Ref.ID, err)
-			}
-			rd.Spec = specsRD.Spec
-			// Check staleness: compare write timestamp against ObservedDesireUpdateTime.
-			if wt, ok := specWriteTimes[collectionReadDesires+"/"+specsReadSnaps[i].Ref.ID]; ok {
-				if rd.Status.ObservedDesireUpdateTime.Before(wt) {
-					stale = true
-				}
-			}
-			// Manually decode status_kubeContent (stored as map[string]any at doc root).
-			if v, ok := snap.Data()["status_kubeContent"]; ok && v != nil {
-				raw, err := json.Marshal(v)
-				if err != nil {
-					return nil, fmt.Errorf("firestore transport: GetStatus marshal status_kubeContent: %w", err)
-				}
-				rd.Status.KubeContent = &k8sruntime.RawExtension{Raw: raw}
-			}
-			readDesires = append(readDesires, rd)
+			rd.Status.KubeContent = &k8sruntime.RawExtension{Raw: raw}
+		}
+		readDesires = append(readDesires, rd)
+	}
+
+	for key := range specWriteTimes {
+		if _, ok := seenStatuses[key]; !ok {
+			stale = true
+			break
 		}
 	}
 
@@ -356,10 +310,9 @@ func (c *Client) Delete(ctx context.Context, targetCluster, groupKey string) err
 				}
 
 				ref := ad.Spec.TargetItem
-				taskKey := ad.Spec.ClusterID
 
 				// Write DeleteDesire.
-				deleteID, deleteData := buildDeleteDesireDoc(taskKey, targetCluster, ref)
+				deleteID, deleteData := buildDeleteDesireDoc(groupKey, targetCluster, ref)
 				deleteRef := mc.specs.Collection(collectionDeleteDesires).Doc(deleteID)
 				if err := tx.Set(deleteRef, deleteData); err != nil {
 					return fmt.Errorf("set delete desire: %w", err)
@@ -427,36 +380,30 @@ func (c *Client) GetDeleteStatus(ctx context.Context, targetCluster, groupKey st
 		}, nil
 	}
 
-	// Fetch corresponding status documents.
-	statusRefs := make([]*firestore.DocumentRef, len(specsSnaps))
-	for i, snap := range specsSnaps {
-		statusRefs[i] = mc.status.Collection(collectionDeleteDesires).Doc(snap.Ref.ID)
-	}
-	statusSnaps, err := mc.status.GetAll(ctx, statusRefs)
+	statusSnaps, err := mc.status.Collection(collectionDeleteDesires).
+		Where("spec.groupKey", "==", groupKey).
+		Documents(ctx).GetAll()
 	if err != nil {
-		return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s fetch status: %w", targetCluster, groupKey, err)
+		return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s query status: %w", targetCluster, groupKey, err)
 	}
 
-	pending := 0
+	successful := make(map[string]bool, len(statusSnaps))
 	for _, snap := range statusSnaps {
-		if !snap.Exists() {
-			// kube-applier-gcp hasn't processed this DeleteDesire yet.
-			pending++
-			continue
-		}
 		var dd kubeapplier.DeleteDesire
 		if err := snap.DataTo(&dd); err != nil {
 			return nil, fmt.Errorf("firestore transport: GetDeleteStatus %s/%s decode: %w", targetCluster, groupKey, err)
 		}
-		// Check for Successful=True condition.
-		successful := false
 		for _, cond := range dd.Status.Conditions {
 			if cond.Type == kubeapplier.ConditionTypeSuccessful && cond.Status == "True" {
-				successful = true
+				successful[snap.Ref.ID] = true
 				break
 			}
 		}
-		if !successful {
+	}
+
+	pending := 0
+	for _, snap := range specsSnaps {
+		if !successful[snap.Ref.ID] {
 			pending++
 		}
 	}
@@ -477,15 +424,21 @@ func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, groupK
 		return err
 	}
 
-	// Query DeleteDesires from specs DB.
-	snaps, err := mc.specs.Collection(collectionDeleteDesires).
+	specsSnaps, err := mc.specs.Collection(collectionDeleteDesires).
 		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()
 	if err != nil {
-		return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s query: %w", targetCluster, groupKey, err)
+		return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s query specs: %w", targetCluster, groupKey, err)
 	}
 
-	if len(snaps) == 0 {
+	statusSnaps, err := mc.status.Collection(collectionDeleteDesires).
+		Where("spec.groupKey", "==", groupKey).
+		Documents(ctx).GetAll()
+	if err != nil {
+		return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s query status: %w", targetCluster, groupKey, err)
+	}
+
+	if len(specsSnaps) == 0 && len(statusSnaps) == 0 {
 		c.log.Infof(ctx, "firestore transport: CleanupDeleteDesires %s/%s: no delete desires found", targetCluster, groupKey)
 		return nil
 	}
@@ -498,17 +451,15 @@ func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, groupK
 	var specsJobs []*firestore.BulkWriterJob
 	var statusJobs []*firestore.BulkWriterJob
 
-	for _, snap := range snaps {
-		// Delete from specs DB.
+	for _, snap := range specsSnaps {
 		job, err := specsBatch.Delete(snap.Ref)
 		if err != nil {
 			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s delete specs: %w", targetCluster, groupKey, err)
 		}
 		specsJobs = append(specsJobs, job)
-
-		// Delete from status DB (best-effort — may not exist yet).
-		statusRef := mc.status.Collection(collectionDeleteDesires).Doc(snap.Ref.ID)
-		job, err = statusBatch.Delete(statusRef)
+	}
+	for _, snap := range statusSnaps {
+		job, err := statusBatch.Delete(snap.Ref)
 		if err != nil {
 			return fmt.Errorf("firestore transport: CleanupDeleteDesires %s/%s delete status: %w", targetCluster, groupKey, err)
 		}
@@ -530,7 +481,7 @@ func (c *Client) CleanupDeleteDesires(ctx context.Context, targetCluster, groupK
 		}
 	}
 
-	c.log.Infof(ctx, "firestore transport: cleaned up %d delete desires for %s/%s", len(snaps), targetCluster, groupKey)
+	c.log.Infof(ctx, "firestore transport: cleaned up %d specs and %d status delete desires for %s/%s", len(specsSnaps), len(statusSnaps), targetCluster, groupKey)
 	return nil
 }
 

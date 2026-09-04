@@ -86,8 +86,8 @@ func resourceKey(ref kubeapplier.ResourceReference) string {
 // at the document root (a map[string]any from the raw JSON), matching the
 // kube-applier-gcp rawext_codec convention. The "spec" field has KubeContent=nil
 // because the Firestore ApplyDesireSpec struct tags it as firestore:"-".
-func buildApplyDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceReference, raw []byte) (docID string, data map[string]any, err error) {
-	docID = desireid.NewDocumentID(taskKey, ref.Group, ref.Version, ref.Resource, ref.Namespace, ref.Name)
+func buildApplyDesireDoc(groupKey, mcName string, ref kubeapplier.ResourceReference, raw []byte) (docID string, data map[string]any, err error) {
+	docID = desireid.NewDocumentID(groupKey, ref.Group, ref.Version, ref.Resource, ref.Namespace, ref.Name)
 
 	var kubeContentMap map[string]any
 	if err := json.Unmarshal(raw, &kubeContentMap); err != nil {
@@ -97,8 +97,7 @@ func buildApplyDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceReferen
 	data = map[string]any{
 		"spec": kubeapplier.ApplyDesireSpec{
 			ManagementCluster: mcName,
-			ClusterID:         taskKey,
-			GroupKey:          taskKey,
+			GroupKey:          groupKey,
 			TargetItem:        ref,
 			KubeContent:       nil, // stored separately as spec_kubeContent
 		},
@@ -110,13 +109,12 @@ func buildApplyDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceReferen
 
 // buildReadDesireDoc returns the Firestore document ID and data map for a ReadDesire.
 // ReadDesire has no KubeContent in spec; it only has it in status (written by kube-applier-gcp).
-func buildReadDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceReference) (docID string, data map[string]any) {
-	docID = desireid.NewDocumentID(taskKey, ref.Group, ref.Version, ref.Resource, ref.Namespace, ref.Name)
+func buildReadDesireDoc(groupKey, mcName string, ref kubeapplier.ResourceReference) (docID string, data map[string]any) {
+	docID = desireid.NewDocumentID(groupKey, ref.Group, ref.Version, ref.Resource, ref.Namespace, ref.Name)
 	data = map[string]any{
 		"spec": kubeapplier.ReadDesireSpec{
 			ManagementCluster: mcName,
-			ClusterID:         taskKey,
-			GroupKey:          taskKey,
+			GroupKey:          groupKey,
 			TargetItem:        ref,
 		},
 		"status": kubeapplier.ReadDesireStatus{},
@@ -125,13 +123,12 @@ func buildReadDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceReferenc
 }
 
 // buildDeleteDesireDoc returns the Firestore document ID and data map for a DeleteDesire.
-func buildDeleteDesireDoc(taskKey, mcName string, ref kubeapplier.ResourceReference) (docID string, data map[string]any) {
-	docID = desireid.NewDocumentID(taskKey, ref.Group, ref.Version, ref.Resource, ref.Namespace, ref.Name)
+func buildDeleteDesireDoc(groupKey, mcName string, ref kubeapplier.ResourceReference) (docID string, data map[string]any) {
+	docID = desireid.NewDocumentID(groupKey, ref.Group, ref.Version, ref.Resource, ref.Namespace, ref.Name)
 	data = map[string]any{
 		"spec": kubeapplier.DeleteDesireSpec{
 			ManagementCluster: mcName,
-			ClusterID:         taskKey,
-			GroupKey:          taskKey,
+			GroupKey:          groupKey,
 			TargetItem:        ref,
 		},
 		"status": kubeapplier.DeleteDesireStatus{},
