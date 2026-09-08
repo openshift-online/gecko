@@ -1,6 +1,6 @@
 module github.com/openshift-online/gecko/platform-api
 
-go 1.26.4
+go 1.27
 
 require (
 	github.com/go-logr/stdr v1.2.2

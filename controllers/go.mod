@@ -1,6 +1,6 @@
 module github.com/openshift-online/gecko/controllers
 
-go 1.26.4
+go 1.27
 
 require (
 	cloud.google.com/go/firestore v1.25.0
