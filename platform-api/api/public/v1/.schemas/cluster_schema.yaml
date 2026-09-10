@@ -19,6 +19,56 @@ properties:
   spec:
     description: ClusterSpec is user-defined input only.
     properties:
+      controlPlaneUpgradePolicy:
+        description: |-
+          ControlPlaneUpgradePolicy defines customer timing preferences for mandatory
+          platform-managed control-plane upgrades. An omitted policy permits eligible
+          upgrades to begin at any time.
+        properties:
+          maintenanceExclusions:
+            items:
+              description: |-
+                MaintenanceExclusion defines a non-recurring period during which automatic
+                control-plane minor version upgrades must not begin.
+              properties:
+                end:
+                  format: date-time
+                  type: string
+                name:
+                  maxLength: 63
+                  minLength: 1
+                  type: string
+                start:
+                  format: date-time
+                  type: string
+              required:
+              - end
+              - name
+              - start
+              type: object
+            maxItems: 3
+            type: array
+          maintenanceWindow:
+            description: RecurringMaintenanceWindow defines an RFC 5545 recurring
+              maintenance window.
+            properties:
+              duration:
+                type: string
+              recurrence:
+                minLength: 1
+                type: string
+              start:
+                format: date-time
+                type: string
+              timeZone:
+                default: UTC
+                type: string
+            required:
+            - duration
+            - recurrence
+            - start
+            type: object
+        type: object
       dns:
         properties:
           baseDomain:

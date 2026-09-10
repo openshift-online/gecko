@@ -5,10 +5,12 @@ import (
 
 	"github.com/spf13/cobra"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	fstransport "github.com/openshift-online/gecko/controllers/client/transport/firestore"
+	"github.com/openshift-online/gecko/controllers/controlplaneupgrade"
 	hc "github.com/openshift-online/gecko/controllers/hc"
 	"github.com/openshift-online/gecko/controllers/util/setup"
 )
@@ -42,6 +44,15 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				WithOptions(rf.ControllerOpts()).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
+			}
+
+			upgradeRec := controlplaneupgrade.NewReconciler(mgr.GetClient(), log)
+			if err := ctrl.NewControllerManagedBy(mgr).
+				Named("control-plane-upgrade-poc").
+				For(&privatev1.Cluster{}).
+				WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
+				Complete(upgradeRec); err != nil {
+				return fmt.Errorf("setup control-plane upgrade controller: %w", err)
 			}
 
 			return mgr.Start(ctx)

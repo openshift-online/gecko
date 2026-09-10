@@ -37,6 +37,11 @@ type ClusterSpec struct {
 	Networking NetworkingSpec `json:"networking"`
 
 	DNS *DNSSpec `json:"dns,omitempty"`
+	// ControlPlaneUpgradePolicy defines when automatic control-plane minor
+	// version upgrades may begin. Patch upgrades are platform-managed and do
+	// not use these timing controls.
+
+	ControlPlaneUpgradePolicy *ControlPlaneUpgradePolicy `json:"controlPlaneUpgradePolicy,omitempty"`
 }
 
 type ClusterPlatformSpec struct {
@@ -153,6 +158,7 @@ type ClusterStatus struct {
 // This field is read-only — populated by the hc-adapter only.
 type HostedClusterResult struct {
 	APIEndpoint string `json:"apiEndpoint,omitempty"`
+	// Version is the most recent release with a Completed history entry.
 
 	Version string `json:"version,omitempty"`
 }

@@ -579,8 +579,8 @@ func TestReconcile_EndpointAccessPropagated(t *testing.T) {
 	require.Equal(t, "PublicAndPrivate", gcp["endpointAccess"], "EndpointAccess from cluster spec should be propagated to the HostedCluster manifest")
 }
 
-// TestReconcile_HCFeedback_SetsHostedClusterResult verifies that controlPlaneEndpoint and
-// version fields from HC status feedback are written to cluster.Status.HostedClusterResult.
+// TestReconcile_HCFeedback_SetsHostedClusterResult verifies that control-plane
+// version feedback is written to cluster status.
 func TestReconcile_HCFeedback_SetsHostedClusterResult(t *testing.T) {
 	clusterID := "cluster-abc"
 	mcName := "mc-cluster-1"
@@ -598,6 +598,9 @@ func TestReconcile_HCFeedback_SetsHostedClusterResult(t *testing.T) {
 				"availableCondition":   "True",
 				"controlPlaneEndpoint": "api.my-cluster-user.example.com",
 				"version":              "4.15.0",
+				"desiredVersion":       "4.15.0",
+				"availableVersions":    `["4.15.1","4.15.2"]`,
+				"versionConditions":    `[{"type":"ClusterVersionUpgradeable","status":"True","reason":"AsExpected","message":"","lastTransitionTime":null},{"type":"Degraded","status":"False","reason":"AsExpected","message":"","lastTransitionTime":null}]`,
 			},
 		},
 	}
@@ -613,6 +616,10 @@ func TestReconcile_HCFeedback_SetsHostedClusterResult(t *testing.T) {
 	require.NotNil(t, captured.Status.HostedClusterResult)
 	require.Equal(t, "api.my-cluster-user.example.com", captured.Status.HostedClusterResult.APIEndpoint)
 	require.Equal(t, "4.15.0", captured.Status.HostedClusterResult.Version)
+	require.Equal(t, "4.15.0", captured.Status.HostedClusterResult.DesiredVersion)
+	require.Equal(t, []string{"4.15.1", "4.15.2"}, captured.Status.HostedClusterResult.AvailableVersions)
+	require.Equal(t, metav1.ConditionTrue, meta.FindStatusCondition(captured.Status.Conditions, "ClusterVersionUpgradeable").Status)
+	require.Equal(t, metav1.ConditionFalse, meta.FindStatusCondition(captured.Status.Conditions, "HostedClusterDegraded").Status)
 }
 
 // TestReconcile_CreatedByAnnotationPropagated verifies that the created-by annotation

@@ -40,6 +40,11 @@ type ClusterSpec struct {
 	Networking NetworkingSpec `json:"networking"`
 	// +orlop:public
 	DNS *DNSSpec `json:"dns,omitempty"`
+	// ControlPlaneUpgradePolicy defines when automatic control-plane minor
+	// version upgrades may begin. Patch upgrades are platform-managed and do
+	// not use these timing controls.
+	// +orlop:public
+	ControlPlaneUpgradePolicy *ControlPlaneUpgradePolicy `json:"controlPlaneUpgradePolicy,omitempty"`
 }
 
 type ClusterPlatformSpec struct {
@@ -197,8 +202,14 @@ type VersionResolutionResult struct {
 type HostedClusterResult struct {
 	// +orlop:public
 	APIEndpoint string `json:"apiEndpoint,omitempty"`
+	// Version is the most recent release with a Completed history entry.
 	// +orlop:public
 	Version string `json:"version,omitempty"`
+	// DesiredVersion is the release currently requested by the HostedCluster.
+	DesiredVersion string `json:"desiredVersion,omitempty"`
+	// AvailableVersions are the update targets advertised by HyperShift for the
+	// HostedCluster's configured release channel.
+	AvailableVersions []string `json:"availableVersions,omitempty"`
 }
 
 func init() { register(&Cluster{}, &ClusterList{}) }

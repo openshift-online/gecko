@@ -19,6 +19,73 @@ properties:
   spec:
     description: ClusterSpec is user-defined input only.
     properties:
+      controlPlaneUpgradePolicy:
+        description: |-
+          ControlPlaneUpgradePolicy defines when automatic control-plane minor
+          version upgrades may begin. Patch upgrades are platform-managed and do
+          not use these timing controls.
+        properties:
+          maintenanceExclusions:
+            description: |-
+              MaintenanceExclusions are one-off blackout periods. An active exclusion
+              takes precedence over the recurring maintenance window.
+            items:
+              description: |-
+                MaintenanceExclusion defines a non-recurring period during which automatic
+                control-plane minor version upgrades must not begin.
+              properties:
+                end:
+                  description: End is the end of the blackout period and must be after
+                    Start.
+                  format: date-time
+                  type: string
+                name:
+                  description: Name identifies the exclusion within the Cluster policy.
+                  maxLength: 63
+                  minLength: 1
+                  type: string
+                start:
+                  description: Start is the beginning of the blackout period.
+                  format: date-time
+                  type: string
+              required:
+              - end
+              - name
+              - start
+              type: object
+            maxItems: 3
+            type: array
+          maintenanceWindow:
+            description: |-
+              MaintenanceWindow is the recurring window in which an automatic minor
+              version upgrade may begin.
+            properties:
+              duration:
+                description: |-
+                  Duration is the amount of time each occurrence remains open. The API
+                  validation layer requires a minimum duration of four hours.
+                type: string
+              recurrence:
+                description: |-
+                  Recurrence is an RFC 5545 recurrence rule, for example
+                  FREQ=WEEKLY;BYDAY=SA.
+                minLength: 1
+                type: string
+              start:
+                description: Start anchors the first occurrence of the window.
+                format: date-time
+                type: string
+              timeZone:
+                default: UTC
+                description: TimeZone is an IANA time-zone name used to evaluate local
+                  recurrence.
+                type: string
+            required:
+            - duration
+            - recurrence
+            - start
+            type: object
+        type: object
       dns:
         properties:
           baseDomain:
@@ -213,7 +280,20 @@ properties:
         properties:
           apiEndpoint:
             type: string
+          availableVersions:
+            description: |-
+              AvailableVersions are the update targets advertised by HyperShift for the
+              HostedCluster's configured release channel.
+            items:
+              type: string
+            type: array
+          desiredVersion:
+            description: DesiredVersion is the release currently requested by the
+              HostedCluster.
+            type: string
           version:
+            description: Version is the most recent release with a Completed history
+              entry.
             type: string
         type: object
       placementResult:

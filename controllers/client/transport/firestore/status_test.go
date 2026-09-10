@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/openshift-online/kube-applier-gcp/pkg/api/kubeapplier"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/openshift-online/kube-applier-gcp/pkg/api/kubeapplier"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -85,10 +85,16 @@ func TestExtractResourceStatuses_HostedCluster(t *testing.T) {
 		"status": map[string]any{
 			"conditions": []any{
 				map[string]any{"type": "Available", "status": "True"},
-				map[string]any{"type": "Degraded", "status": "False"},
+				map[string]any{"type": "Degraded", "status": "False", "reason": "AsExpected"},
+				map[string]any{"type": "ClusterVersionUpgradeable", "status": "True", "reason": "AsExpected"},
 			},
 			"controlPlaneEndpoint": map[string]any{"host": "api.example.com"},
 			"version": map[string]any{
+				"desired": map[string]any{"version": "4.14.0"},
+				"availableUpdates": []any{
+					map[string]any{"version": "4.14.1"},
+					map[string]any{"version": "4.14.2"},
+				},
 				"history": []any{
 					map[string]any{"version": "4.14.0", "state": "Completed"},
 				},
@@ -110,6 +116,14 @@ func TestExtractResourceStatuses_HostedCluster(t *testing.T) {
 	assert.Equal(t, "True", statuses[key]["availableCondition"])
 	assert.Equal(t, "api.example.com", statuses[key]["controlPlaneEndpoint"])
 	assert.Equal(t, "4.14.0", statuses[key]["version"])
+	assert.Equal(t, "4.14.0", statuses[key]["desiredVersion"])
+	assert.JSONEq(t, `["4.14.1","4.14.2"]`, statuses[key]["availableVersions"])
+
+	var conditions []metav1.Condition
+	require.NoError(t, json.Unmarshal([]byte(statuses[key]["versionConditions"]), &conditions))
+	require.Len(t, conditions, 2)
+	assert.Equal(t, "Degraded", conditions[0].Type)
+	assert.Equal(t, "ClusterVersionUpgradeable", conditions[1].Type)
 }
 
 func TestExtractResourceStatuses_HostedCluster_PartialVersionSkipped(t *testing.T) {
@@ -213,11 +227,11 @@ func TestExtractNPFields(t *testing.T) {
 				}
 			}`,
 			expected: map[string]string{
-				"readyCondition":              "True",
-				"allNodesHealthyCondition":    "True",
-				"allMachinesReadyCondition":   "True",
-				"updatingConfigCondition":     "False",
-				"updatingVersionCondition":    "False",
+				"readyCondition":            "True",
+				"allNodesHealthyCondition":  "True",
+				"allMachinesReadyCondition": "True",
+				"updatingConfigCondition":   "False",
+				"updatingVersionCondition":  "False",
 			},
 		},
 		{
