@@ -85,7 +85,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// Check version-resolution readiness.
 	if cluster.Status.VersionResolution == nil {
-		if r.setWaitingConditions(&cluster, "VersionResolutionNotReady", "Waiting for version resolution") {
+		message := "Waiting for version resolution"
+		if condition := meta.FindStatusCondition(cluster.Status.Conditions, "VersionResolved"); condition != nil &&
+			condition.Status == metav1.ConditionFalse &&
+			condition.Reason == "UnsupportedVersion" &&
+			condition.Message != "" {
+			message = condition.Message
+		}
+		if r.setWaitingConditions(&cluster, "VersionResolutionNotReady", message) {
 			if err := r.client.Status().Update(ctx, &cluster); err != nil && !apierrors.IsConflict(err) {
 				return reconcile.Result{}, fmt.Errorf("%s: update cluster status: %w", adapterName, err)
 			}

@@ -72,4 +72,17 @@ Validate required values.
 {{- if not (trim (toString .Values.image.tag)) -}}
 {{- fail "image.tag must be set (e.g. --set image.tag=abc1234)" -}}
 {{- end -}}
+{{- $versionPattern := "^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)([.](0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?([+][0-9A-Za-z-]+([.][0-9A-Za-z-]+)*)?$" -}}
+{{- $defaultVersion := trim (toString .Values.defaultVersion) -}}
+{{- if not $defaultVersion -}}
+{{- fail "defaultVersion must be set to an exact OpenShift version (e.g. --set defaultVersion=4.22.1)" -}}
+{{- else if not (regexMatch $versionPattern $defaultVersion) -}}
+{{- fail "defaultVersion must be a valid exact OpenShift version (e.g. 4.22.1 or 4.22.1-rc.1)" -}}
+{{- end -}}
+{{- $minimumSupportedVersion := trim (toString .Values.minimumSupportedVersion) -}}
+{{- if not $minimumSupportedVersion -}}
+{{- fail "minimumSupportedVersion must be set to an exact OpenShift version (e.g. --set minimumSupportedVersion=4.22.0)" -}}
+{{- else if not (regexMatch $versionPattern $minimumSupportedVersion) -}}
+{{- fail "minimumSupportedVersion must be a valid exact OpenShift version (e.g. 4.22.0)" -}}
+{{- end -}}
 {{- end }}
