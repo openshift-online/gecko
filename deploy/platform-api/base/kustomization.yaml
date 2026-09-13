@@ -9,3 +9,4 @@ resources:
   - service.yaml
   - apiservice.yaml
   - certificate.yaml
+  - pdb.yaml
