@@ -2,15 +2,14 @@ package versionresolution
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -39,10 +38,14 @@ func newTestLogger(t *testing.T) logger.Logger {
 type mockStatusWriter struct {
 	updateErr error
 	called    bool
+	cluster   *privatev1.Cluster
 }
 
-func (m *mockStatusWriter) Update(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+func (m *mockStatusWriter) Update(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
 	m.called = true
+	if cluster, ok := obj.(*privatev1.Cluster); ok {
+		m.cluster = cluster.DeepCopy()
+	}
 	return m.updateErr
 }
 func (m *mockStatusWriter) Create(_ context.Context, _ client.Object, _ client.Object, _ ...client.SubResourceCreateOption) error {
@@ -116,19 +119,6 @@ func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVer
 }
 func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { return false, nil }
 
-// newMockCincinnati builds a simple httptest server that returns a Cincinnati
-// graph containing the given release, or an empty graph if release is nil.
-func newMockCincinnati(release *ReleaseInfo) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		graph := CincinnatiGraph{}
-		if release != nil {
-			graph.Nodes = []ReleaseInfo{*release}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(graph) //nolint:errcheck
-	}))
-}
-
 // clusterReq returns a reconcile.Request for the given cluster name.
 func clusterReq(name string) reconcile.Request {
 	return reconcile.Request{
@@ -140,12 +130,17 @@ func clusterReq(name string) reconcile.Request {
 func buildReconciler(
 	t *testing.T,
 	cluster *privatev1.Cluster,
-	cincSrv *httptest.Server,
+	release *ReleaseInfo,
 ) (*Reconciler, *mockStoreClient) {
 	t.Helper()
 	storeClient := &mockStoreClient{cluster: cluster}
-	cincClient := NewCincinnatiClient(cincSrv.URL, "amd64")
-	return NewReconciler(cincClient, newTestLogger(t), storeClient), storeClient
+	releases := []ReleaseInfo(nil)
+	if release != nil {
+		releases = append(releases, *release)
+	}
+	service, err := NewVersionService(&fakeReleaseSource{releases: releases}, "4.0.0")
+	require.NoError(t, err)
+	return NewReconciler(service, "4.24.1", newTestLogger(t), storeClient), storeClient
 }
 
 // ---- tests ------------------------------------------------------------------
@@ -155,16 +150,13 @@ func TestReconciler_HappyPath(t *testing.T) {
 		Version: "4.22.0-ec.4",
 		Payload: "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
 	}
-	cincSrv := newMockCincinnati(release)
-	defer cincSrv.Close()
-
 	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-1")
 	cluster.SetNamespace("hyperfleet")
 	cluster.SetGeneration(3)
 	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
 
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
+	r, storeClient := buildReconciler(t, cluster, release)
 
 	result, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
 
@@ -173,36 +165,51 @@ func TestReconciler_HappyPath(t *testing.T) {
 	require.False(t, storeClient.updateCalled, "expected no spec Update (result written to status)")
 	require.NotNil(t, storeClient.statusWriter)
 	require.True(t, storeClient.statusWriter.called, "expected Status().Update to be called")
+	resolved := storeClient.statusWriter.cluster.Status.VersionResolution
+	require.NotNil(t, resolved)
+	require.Equal(t, "4.22.0-ec.4", resolved.ReleaseVersion)
+	require.Equal(t, "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64", resolved.ReleaseImage)
+	require.Equal(t, "4.24.1", resolved.DefaultVersion)
+	require.Equal(t, "4.22.0-ec.4", resolved.LatestVersion)
 }
 
 func TestReconciler_AlreadyResolved(t *testing.T) {
-	cincSrv := newMockCincinnati(nil)
-	defer cincSrv.Close()
-
+	release := &ReleaseInfo{
+		Version: "4.22.0-ec.4",
+		Payload: "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
+	}
 	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-2")
 	cluster.SetNamespace("hyperfleet")
 	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
 	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{
-		ReleaseImage:   "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
-		ReleaseVersion: "4.22.0-ec.4",
+		ReleaseImage:      "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
+		ReleaseVersion:    "4.22.0-ec.4",
+		DefaultVersion:    "4.24.1",
+		LatestVersion:     "4.22.0-ec.4",
 		CincinnatiChannel: "candidate-4.22",
+		ChannelGroup:      "candidate",
 	}
+	meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:               "VersionResolved",
+		Status:             metav1.ConditionTrue,
+		Reason:             "VersionResolved",
+		Message:            "Version 4.22.0-ec.4 resolved to image quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
+		ObservedGeneration: cluster.Generation,
+	})
 
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
+	r, storeClient := buildReconciler(t, cluster, release)
 
 	result, err := r.Reconcile(context.Background(), clusterReq("cluster-2"))
 
 	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{}, result)
+	require.Equal(t, reconcile.Result{RequeueAfter: requeueStable}, result)
 	require.False(t, storeClient.updateCalled, "expected no spec Update")
+	require.Nil(t, storeClient.statusWriter, "expected no status update")
 }
 
 func TestReconciler_ClusterNotFound(t *testing.T) {
-	cincSrv := newMockCincinnati(nil)
-	defer cincSrv.Close()
-
-	r, _ := buildReconciler(t, nil, cincSrv) // nil cluster → NotFound
+	r, _ := buildReconciler(t, nil, nil) // nil cluster → NotFound
 
 	result, err := r.Reconcile(context.Background(), clusterReq("cluster-404"))
 
@@ -211,40 +218,173 @@ func TestReconciler_ClusterNotFound(t *testing.T) {
 }
 
 func TestReconciler_VersionNotSet(t *testing.T) {
-	cincSrv := newMockCincinnati(nil)
-	defer cincSrv.Close()
-
 	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-3")
 	cluster.SetNamespace("hyperfleet")
-	// Release is nil — version not set
-
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
+	storeClient := &mockStoreClient{cluster: cluster}
+	r := NewReconciler(
+		newTestVersionService(t, &fakeReleaseSource{}),
+		"4.24.1",
+		newTestLogger(t),
+		storeClient,
+	)
 
 	result, err := r.Reconcile(context.Background(), clusterReq("cluster-3"))
 
 	require.NoError(t, err)
 	require.Equal(t, reconcile.Result{}, result)
 	require.False(t, storeClient.updateCalled)
+	require.NotNil(t, storeClient.statusWriter)
+	condition := meta.FindStatusCondition(storeClient.statusWriter.cluster.Status.Conditions, "VersionResolved")
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, "ReleaseVersionNotSet", condition.Reason)
 }
 
-func TestReconciler_VersionNotInCincinnati(t *testing.T) {
-	// Cincinnati returns an empty graph (no matching node).
-	cincSrv := newMockCincinnati(nil)
-	defer cincSrv.Close()
+func TestReconciler_RejectsVersionBeforeMinimum(t *testing.T) {
+	cluster := &privatev1.Cluster{}
+	cluster.SetName("cluster-unsupported-version")
+	cluster.Spec.Release.Version = "4.23.9"
+	storeClient := &mockStoreClient{cluster: cluster}
+	r := NewReconciler(
+		newTestVersionService(t, &fakeReleaseSource{}),
+		"4.24.1",
+		newTestLogger(t),
+		storeClient,
+	)
 
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+
+	require.NoError(t, err)
+	require.Equal(t, reconcile.Result{}, result)
+	require.NotNil(t, storeClient.statusWriter)
+	require.NotNil(t, storeClient.statusWriter.cluster)
+	condition := meta.FindStatusCondition(storeClient.statusWriter.cluster.Status.Conditions, "VersionResolved")
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, "UnsupportedVersion", condition.Reason)
+}
+
+func TestReconciler_RejectsMalformedVersion(t *testing.T) {
+	cluster := &privatev1.Cluster{}
+	cluster.SetName("cluster-invalid-version")
+	cluster.Spec.Release.Version = "not-a-version"
+	source := &fakeReleaseSource{}
+	storeClient := &mockStoreClient{cluster: cluster}
+	r := NewReconciler(
+		newTestVersionService(t, source),
+		"4.24.1",
+		newTestLogger(t),
+		storeClient,
+	)
+
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+
+	require.NoError(t, err)
+	require.Equal(t, reconcile.Result{}, result)
+	require.Zero(t, source.callCount())
+	require.NotNil(t, storeClient.statusWriter)
+	condition := meta.FindStatusCondition(storeClient.statusWriter.cluster.Status.Conditions, "VersionResolved")
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, "InvalidVersion", condition.Reason)
+	require.Nil(t, storeClient.statusWriter.cluster.Status.VersionResolution)
+}
+
+func TestReconciler_EmptyCincinnatiResponse(t *testing.T) {
+	// Cincinnati returns an empty graph (no matching node).
 	cluster := &privatev1.Cluster{}
 	cluster.SetName("cluster-5")
 	cluster.SetNamespace("hyperfleet")
 	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
 
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
+	r, storeClient := buildReconciler(t, cluster, nil)
 
 	result, err := r.Reconcile(context.Background(), clusterReq("cluster-5"))
 
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrNoValidReleases)
 	require.Equal(t, reconcile.Result{}, result)
 	require.False(t, storeClient.updateCalled)
+	require.NotNil(t, storeClient.statusWriter)
+	condition := meta.FindStatusCondition(storeClient.statusWriter.cluster.Status.Conditions, "VersionResolved")
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionUnknown, condition.Status)
+	require.Equal(t, "CincinnatiDataInvalid", condition.Reason)
+}
+
+func TestReconciler_VersionNotFound(t *testing.T) {
+	cluster := &privatev1.Cluster{}
+	cluster.SetName("cluster-version-not-found")
+	cluster.Spec.Release.Version = "4.24.2"
+	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{ReleaseVersion: "4.24.1"}
+	storeClient := &mockStoreClient{cluster: cluster}
+	source := &fakeReleaseSource{releases: []ReleaseInfo{{Version: "4.24.1", Payload: "image-1"}}}
+	r := NewReconciler(newTestVersionService(t, source), "4.24.1", newTestLogger(t), storeClient)
+
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+
+	require.NoError(t, err)
+	require.Equal(t, reconcile.Result{}, result)
+	condition := meta.FindStatusCondition(storeClient.statusWriter.cluster.Status.Conditions, "VersionResolved")
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, "VersionNotFoundInCincinnati", condition.Reason)
+	require.Nil(t, storeClient.statusWriter.cluster.Status.VersionResolution)
+}
+
+func TestReconciler_ReleaseWithEmptyPayloadIsNotResolved(t *testing.T) {
+	cluster := &privatev1.Cluster{}
+	cluster.SetName("cluster-empty-release-payload")
+	cluster.Spec.Release.Version = "4.24.2"
+	storeClient := &mockStoreClient{cluster: cluster}
+	source := &fakeReleaseSource{releases: []ReleaseInfo{{Version: "4.24.2"}}}
+	r := NewReconciler(newTestVersionService(t, source), "4.24.1", newTestLogger(t), storeClient)
+
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+
+	require.NoError(t, err)
+	require.Equal(t, reconcile.Result{}, result)
+	condition := meta.FindStatusCondition(storeClient.statusWriter.cluster.Status.Conditions, "VersionResolved")
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionFalse, condition.Status)
+	require.Equal(t, "VersionNotFoundInCincinnati", condition.Reason)
+	require.Nil(t, storeClient.statusWriter.cluster.Status.VersionResolution)
+}
+
+func TestReconciler_CincinnatiUnavailable(t *testing.T) {
+	cluster := &privatev1.Cluster{}
+	cluster.SetName("cluster-cincinnati-unavailable")
+	cluster.Spec.Release.Version = "4.24.1"
+	storeClient := &mockStoreClient{cluster: cluster}
+	source := &fakeReleaseSource{err: errors.New("request timed out")}
+	r := NewReconciler(newTestVersionService(t, source), "4.24.1", newTestLogger(t), storeClient)
+
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+
+	require.ErrorContains(t, err, "request timed out")
+	require.Equal(t, reconcile.Result{}, result)
+	condition := meta.FindStatusCondition(storeClient.statusWriter.cluster.Status.Conditions, "VersionResolved")
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionUnknown, condition.Status)
+	require.Equal(t, "CincinnatiUnavailable", condition.Reason)
+}
+
+func TestReconciler_MalformedCincinnatiResponse(t *testing.T) {
+	cluster := &privatev1.Cluster{}
+	cluster.SetName("cluster-cincinnati-malformed")
+	cluster.Spec.Release.Version = "4.24.1"
+	storeClient := &mockStoreClient{cluster: cluster}
+	source := &fakeReleaseSource{err: errors.New("cincinnati: unmarshal response: invalid character")}
+	r := NewReconciler(newTestVersionService(t, source), "4.24.1", newTestLogger(t), storeClient)
+
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+
+	require.ErrorContains(t, err, "unmarshal response")
+	require.Equal(t, reconcile.Result{}, result)
+	condition := meta.FindStatusCondition(storeClient.statusWriter.cluster.Status.Conditions, "VersionResolved")
+	require.NotNil(t, condition)
+	require.Equal(t, metav1.ConditionUnknown, condition.Status)
+	require.Equal(t, "CincinnatiUnavailable", condition.Reason)
 }
 
 func TestBuildChannel(t *testing.T) {

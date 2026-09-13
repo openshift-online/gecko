@@ -70,8 +70,12 @@ Reconciles `Cluster` resources. Selects an eligible management cluster and DNS b
 
 Reconciles `Cluster` resources. Resolves the OCP release image for the requested version via the Cincinnati API.
 
-- Queries the Cincinnati update graph for the matching release payload
-- Writes `Status.VersionResolution` (ReleaseVersion, ReleaseImage, CincinnatiChannel)
+- Requires `spec.release.version` and validates the exact customer-requested version
+- Rejects malformed versions and versions below the configured GCP HCP minimum before contacting Cincinnati
+- Queries the version's derived Cincinnati channel for the matching release payload
+- Calculates the latest supported version in that same channel
+- Writes public `Status.VersionResolution` fields for the resolved, default, and latest versions
+- Reports invalid, unsupported, unavailable, malformed-data, and successful outcomes through the `VersionResolved` condition
 
 ### nodepool-vr (NodePool Version Resolution)
 
@@ -173,6 +177,10 @@ make build
   --hc-dns-domains example.com,backup.example.com
 
 ./bin/gecko-controllers hc --log-level debug
+
+./bin/gecko-controllers version-resolution \
+  --default-version 4.22.1 \
+  --minimum-supported-version 4.22.0
 
 # Common flags (all controllers)
 --log-level {debug,info,warn,error}   # default: info

@@ -337,6 +337,62 @@ func TestReconcile_VRNil_SetsWaitingConditions(t *testing.T) {
 	require.Equal(t, 15*time.Second, result.RequeueAfter, "should requeue while VR is not ready")
 	require.True(t, storeClient.statusWriter.called)
 	require.Empty(t, tr.ApplyCalls)
+	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
+	hca := meta.FindStatusCondition(captured.Status.Conditions, "HostedClusterAvailable")
+	require.NotNil(t, hca)
+	require.Equal(t, "Waiting for version resolution", hca.Message)
+}
+
+func TestReconcile_VRNil_PropagatesUnsupportedVersionMessage(t *testing.T) {
+	clusterID := "cluster-abc"
+	cluster := &privatev1.Cluster{}
+	cluster.SetName(clusterID)
+	cluster.SetNamespace("hyperfleet")
+	cluster.SetFinalizers([]string{constants.FinalizerCluster})
+	cluster.Status.PlacementResult = &privatev1.PlacementResult{ManagementClusterName: "mc-1"}
+	cluster.Status.Conditions = []metav1.Condition{{
+		Type:    "VersionResolved",
+		Status:  metav1.ConditionFalse,
+		Reason:  "UnsupportedVersion",
+		Message: `unsupported version "4.21.0": minimum supported version is 4.22.0`,
+	}}
+
+	r, storeClient := buildReconciler(t, cluster, nil, mock.New(), nil)
+
+	result, err := r.Reconcile(context.Background(), clusterReq(clusterID))
+	require.NoError(t, err)
+	require.Equal(t, 15*time.Second, result.RequeueAfter)
+	require.True(t, storeClient.statusWriter.called)
+	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
+	hca := meta.FindStatusCondition(captured.Status.Conditions, "HostedClusterAvailable")
+	require.NotNil(t, hca)
+	require.Equal(t, "VersionResolutionNotReady", hca.Reason)
+	require.Equal(t, `unsupported version "4.21.0": minimum supported version is 4.22.0`, hca.Message)
+}
+
+func TestReconcile_VRNil_DoesNotPropagateOtherVersionResolutionFailures(t *testing.T) {
+	clusterID := "cluster-abc"
+	cluster := &privatev1.Cluster{}
+	cluster.SetName(clusterID)
+	cluster.SetNamespace("hyperfleet")
+	cluster.SetFinalizers([]string{constants.FinalizerCluster})
+	cluster.Status.PlacementResult = &privatev1.PlacementResult{ManagementClusterName: "mc-1"}
+	cluster.Status.Conditions = []metav1.Condition{{
+		Type:    "VersionResolved",
+		Status:  metav1.ConditionFalse,
+		Reason:  "VersionNotFoundInCincinnati",
+		Message: `version "4.22.99" not found in Cincinnati channel "stable-4.22"`,
+	}}
+
+	r, storeClient := buildReconciler(t, cluster, nil, mock.New(), nil)
+
+	_, err := r.Reconcile(context.Background(), clusterReq(clusterID))
+	require.NoError(t, err)
+	require.True(t, storeClient.statusWriter.called)
+	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
+	hca := meta.FindStatusCondition(captured.Status.Conditions, "HostedClusterAvailable")
+	require.NotNil(t, hca)
+	require.Equal(t, "Waiting for version resolution", hca.Message)
 }
 
 // TestReconcile_VRNil_StatusUpdateConflict verifies that a conflict on Status.Update when

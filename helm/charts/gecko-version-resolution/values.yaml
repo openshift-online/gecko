@@ -13,6 +13,8 @@ orlopURL: ""
 logLevel: info
 logFormat: json
 workers: 10
+defaultVersion: ""
+minimumSupportedVersion: "4.22.0"
 
 cincinnati:
   url: "https://api.openshift.com/api/upgrades_info/v1/graph"
