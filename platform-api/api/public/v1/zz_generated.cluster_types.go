@@ -37,6 +37,11 @@ type ClusterSpec struct {
 	Networking NetworkingSpec `json:"networking"`
 
 	DNS *DNSSpec `json:"dns,omitempty"`
+	// ControlPlaneUpgradePolicy defines when automatic control-plane minor
+	// version upgrades may begin. Patch upgrades are platform-managed and do
+	// not use these timing controls.
+
+	ControlPlaneUpgradePolicy *ControlPlaneUpgradePolicy `json:"controlPlaneUpgradePolicy,omitempty"`
 }
 
 type ClusterPlatformSpec struct {
@@ -106,6 +111,7 @@ type ReleaseSpec struct {
 
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`
 	Version string `json:"version"`
 
 	// +kubebuilder:validation:Required
@@ -152,6 +158,7 @@ type ClusterStatus struct {
 // This field is read-only — populated by the hc-adapter only.
 type HostedClusterResult struct {
 	APIEndpoint string `json:"apiEndpoint,omitempty"`
+	// Version is the most recent release with a Completed history entry.
 
 	Version string `json:"version,omitempty"`
 }

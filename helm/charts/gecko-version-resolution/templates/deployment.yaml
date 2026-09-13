@@ -45,6 +45,8 @@ spec:
             - --log-level={{ .Values.logLevel }}
             - --log-format={{ .Values.logFormat }}
             - --workers={{ .Values.workers }}
+            - --default-version={{ .Values.defaultVersion }}
+            - --minimum-supported-version={{ .Values.minimumSupportedVersion }}
             - --cincinnati-url={{ .Values.cincinnati.url }}
             - --arch={{ .Values.cincinnati.arch }}
           resources:

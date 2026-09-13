@@ -3,7 +3,9 @@ package hc
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -90,7 +92,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// Check version-resolution readiness.
 	if cluster.Status.VersionResolution == nil {
-		if r.setWaitingConditions(&cluster, "VersionResolutionNotReady", "Waiting for version resolution") {
+		message := "Waiting for version resolution"
+		if condition := meta.FindStatusCondition(cluster.Status.Conditions, "VersionResolved"); condition != nil &&
+			condition.Status == metav1.ConditionFalse &&
+			condition.Reason == "UnsupportedVersion" &&
+			condition.Message != "" {
+			message = condition.Message
+		}
+		if r.setWaitingConditions(&cluster, "VersionResolutionNotReady", message) {
 			if err := r.client.Status().Update(ctx, &cluster); err != nil && !apierrors.IsConflict(err) {
 				return reconcile.Result{}, fmt.Errorf("%s: update cluster status: %w", adapterName, err)
 			}
@@ -188,7 +197,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Write status conditions — only update if something changed.
-	if r.applyStatusConditions(&cluster, mwStatus) {
+	statusChanged, err := r.applyStatusConditions(&cluster, mwStatus)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("%s: apply status feedback: %w", adapterName, err)
+	}
+	if statusChanged {
 		if err := r.client.Status().Update(ctx, &cluster); err != nil {
 			if apierrors.IsConflict(err) {
 				return reconcile.Result{}, nil
@@ -299,7 +312,7 @@ func (r *Reconciler) setWaitingConditions(cluster *privatev1.Cluster, reason, me
 
 // applyStatusConditions derives conditions from the resource status and writes them to the cluster.
 // Returns true if any condition changed.
-func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus *transport.Status) bool {
+func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus *transport.Status) (bool, error) {
 	gen := cluster.Generation
 
 	if mwStatus == nil {
@@ -324,7 +337,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 			Message:            "Resources have not been applied yet",
 			ObservedGeneration: gen,
 		})
-		return a || b || c
+		return a || b || c, nil
 	}
 
 	// Derive ResourcesApplied from top-level conditions.
@@ -336,7 +349,12 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	availableStatus := string(metav1.ConditionFalse)
 	apiEndpoint := ""
 	version := ""
+	desiredVersion := ""
+	availableVersions := []string{}
+	versionConditions := []metav1.Condition{}
+	hasHCFeedback := false
 	if hcFeedback, ok := mwStatus.ResourceStatuses[hcKey]; ok {
+		hasHCFeedback = true
 		if v, ok := hcFeedback["availableCondition"]; ok {
 			availableStatus = v
 		}
@@ -345,6 +363,19 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 		}
 		if v, ok := hcFeedback["version"]; ok {
 			version = v
+		}
+		if v, ok := hcFeedback["desiredVersion"]; ok {
+			desiredVersion = v
+		}
+		if v, ok := hcFeedback["availableVersions"]; ok {
+			if err := json.Unmarshal([]byte(v), &availableVersions); err != nil {
+				return false, fmt.Errorf("decode available versions: %w", err)
+			}
+		}
+		if v, ok := hcFeedback["versionConditions"]; ok {
+			if err := json.Unmarshal([]byte(v), &versionConditions); err != nil {
+				return false, fmt.Errorf("decode version conditions: %w", err)
+			}
 		}
 	}
 
@@ -391,22 +422,34 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 		ObservedGeneration: gen,
 	})
 
-	// Write HostedClusterResult when either field is non-empty.
-	c := false
-	if apiEndpoint != "" || version != "" {
-		desired := &privatev1.HostedClusterResult{
-			APIEndpoint: apiEndpoint,
-			Version:     version,
+	// Mirror the control-plane version conditions onto Cluster status. The HC
+	// controller is the single writer for these raw HyperShift observations.
+	e := false
+	for _, condition := range versionConditions {
+		if condition.Type == "Degraded" {
+			condition.Type = "HostedClusterDegraded"
 		}
-		if cluster.Status.HostedClusterResult == nil ||
-			cluster.Status.HostedClusterResult.APIEndpoint != desired.APIEndpoint ||
-			cluster.Status.HostedClusterResult.Version != desired.Version {
+		condition.ObservedGeneration = gen
+		e = meta.SetStatusCondition(&cluster.Status.Conditions, condition) || e
+	}
+
+	// Write HostedClusterResult whenever live HC feedback is present. Empty
+	// availableVersions is meaningful and clears targets that are no longer advertised.
+	c := false
+	if hasHCFeedback {
+		desired := &privatev1.HostedClusterResult{
+			APIEndpoint:       apiEndpoint,
+			Version:           version,
+			DesiredVersion:    desiredVersion,
+			AvailableVersions: availableVersions,
+		}
+		if !reflect.DeepEqual(cluster.Status.HostedClusterResult, desired) {
 			cluster.Status.HostedClusterResult = desired
 			c = true
 		}
 	}
 
-	return a || b || c || d
+	return a || b || c || d || e, nil
 }
 
 // firstCondition returns the status, reason, and message of the first condition matching condType.

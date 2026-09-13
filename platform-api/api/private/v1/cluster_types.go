@@ -40,6 +40,11 @@ type ClusterSpec struct {
 	Networking NetworkingSpec `json:"networking"`
 	// +orlop:public
 	DNS *DNSSpec `json:"dns,omitempty"`
+	// ControlPlaneUpgradePolicy defines when automatic control-plane minor
+	// version upgrades may begin. Patch upgrades are platform-managed and do
+	// not use these timing controls.
+	// +orlop:public
+	ControlPlaneUpgradePolicy *ControlPlaneUpgradePolicy `json:"controlPlaneUpgradePolicy,omitempty"`
 }
 
 type ClusterPlatformSpec struct {
@@ -112,6 +117,7 @@ type ReleaseSpec struct {
 	// +orlop:public
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`
 	Version string `json:"version"`
 	// +orlop:public
 	// +kubebuilder:validation:Required
@@ -179,6 +185,10 @@ type VersionResolutionResult struct {
 	ReleaseImage string `json:"releaseImage,omitempty"`
 	// ReleaseVersion is the resolved OCP version string (e.g. "4.16.3").
 	ReleaseVersion string `json:"releaseVersion,omitempty"`
+	// DefaultVersion is the configured platform default at resolution time.
+	DefaultVersion string `json:"defaultVersion,omitempty"`
+	// LatestVersion is the latest supported release in CincinnatiChannel.
+	LatestVersion string `json:"latestVersion,omitempty"`
 	// CincinnatiChannel is the channel string used to query Cincinnati (e.g. "stable-4.16").
 	// Derived from ChannelGroup and the major.minor of ReleaseVersion.
 	CincinnatiChannel string `json:"cincinnatiChannel,omitempty"`
@@ -192,8 +202,14 @@ type VersionResolutionResult struct {
 type HostedClusterResult struct {
 	// +orlop:public
 	APIEndpoint string `json:"apiEndpoint,omitempty"`
+	// Version is the most recent release with a Completed history entry.
 	// +orlop:public
 	Version string `json:"version,omitempty"`
+	// DesiredVersion is the release currently requested by the HostedCluster.
+	DesiredVersion string `json:"desiredVersion,omitempty"`
+	// AvailableVersions are the update targets advertised by HyperShift for the
+	// HostedCluster's configured release channel.
+	AvailableVersions []string `json:"availableVersions,omitempty"`
 }
 
 func init() { register(&Cluster{}, &ClusterList{}) }
