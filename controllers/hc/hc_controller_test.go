@@ -337,6 +337,62 @@ func TestReconcile_VRNil_SetsWaitingConditions(t *testing.T) {
 	require.Equal(t, 15*time.Second, result.RequeueAfter, "should requeue while VR is not ready")
 	require.True(t, storeClient.statusWriter.called)
 	require.Empty(t, tr.ApplyCalls)
+	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
+	hca := meta.FindStatusCondition(captured.Status.Conditions, "HostedClusterAvailable")
+	require.NotNil(t, hca)
+	require.Equal(t, "Waiting for version resolution", hca.Message)
+}
+
+func TestReconcile_VRNil_PropagatesUnsupportedVersionMessage(t *testing.T) {
+	clusterID := "cluster-abc"
+	cluster := &privatev1.Cluster{}
+	cluster.SetName(clusterID)
+	cluster.SetNamespace("hyperfleet")
+	cluster.SetFinalizers([]string{constants.FinalizerCluster})
+	cluster.Status.PlacementResult = &privatev1.PlacementResult{ManagementClusterName: "mc-1"}
+	cluster.Status.Conditions = []metav1.Condition{{
+		Type:    "VersionResolved",
+		Status:  metav1.ConditionFalse,
+		Reason:  "UnsupportedVersion",
+		Message: `unsupported version "4.21.0": minimum supported version is 4.22.0`,
+	}}
+
+	r, storeClient := buildReconciler(t, cluster, nil, mock.New(), nil)
+
+	result, err := r.Reconcile(context.Background(), clusterReq(clusterID))
+	require.NoError(t, err)
+	require.Equal(t, 15*time.Second, result.RequeueAfter)
+	require.True(t, storeClient.statusWriter.called)
+	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
+	hca := meta.FindStatusCondition(captured.Status.Conditions, "HostedClusterAvailable")
+	require.NotNil(t, hca)
+	require.Equal(t, "VersionResolutionNotReady", hca.Reason)
+	require.Equal(t, `unsupported version "4.21.0": minimum supported version is 4.22.0`, hca.Message)
+}
+
+func TestReconcile_VRNil_DoesNotPropagateOtherVersionResolutionFailures(t *testing.T) {
+	clusterID := "cluster-abc"
+	cluster := &privatev1.Cluster{}
+	cluster.SetName(clusterID)
+	cluster.SetNamespace("hyperfleet")
+	cluster.SetFinalizers([]string{constants.FinalizerCluster})
+	cluster.Status.PlacementResult = &privatev1.PlacementResult{ManagementClusterName: "mc-1"}
+	cluster.Status.Conditions = []metav1.Condition{{
+		Type:    "VersionResolved",
+		Status:  metav1.ConditionFalse,
+		Reason:  "VersionNotFoundInCincinnati",
+		Message: `version "4.22.99" not found in Cincinnati channel "stable-4.22"`,
+	}}
+
+	r, storeClient := buildReconciler(t, cluster, nil, mock.New(), nil)
+
+	_, err := r.Reconcile(context.Background(), clusterReq(clusterID))
+	require.NoError(t, err)
+	require.True(t, storeClient.statusWriter.called)
+	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
+	hca := meta.FindStatusCondition(captured.Status.Conditions, "HostedClusterAvailable")
+	require.NotNil(t, hca)
+	require.Equal(t, "Waiting for version resolution", hca.Message)
 }
 
 // TestReconcile_VRNil_StatusUpdateConflict verifies that a conflict on Status.Update when
@@ -545,8 +601,8 @@ func TestReconcile_EndpointAccessPropagated(t *testing.T) {
 	require.Equal(t, "PublicAndPrivate", gcp["endpointAccess"], "EndpointAccess from cluster spec should be propagated to the HostedCluster manifest")
 }
 
-// TestReconcile_HCFeedback_SetsHostedClusterResult verifies that controlPlaneEndpoint and
-// version fields from HC status feedback are written to cluster.Status.HostedClusterResult.
+// TestReconcile_HCFeedback_SetsHostedClusterResult verifies that control-plane
+// version feedback is written to cluster status.
 func TestReconcile_HCFeedback_SetsHostedClusterResult(t *testing.T) {
 	clusterID := "cluster-abc"
 	mcName := "mc-cluster-1"
@@ -565,6 +621,9 @@ func TestReconcile_HCFeedback_SetsHostedClusterResult(t *testing.T) {
 				"availableCondition":   "True",
 				"controlPlaneEndpoint": "api.my-cluster-user.example.com",
 				"version":              "4.15.0",
+				"desiredVersion":       "4.15.0",
+				"availableVersions":    `["4.15.1","4.15.2"]`,
+				"versionConditions":    `[{"type":"ClusterVersionUpgradeable","status":"True","reason":"AsExpected","message":"","lastTransitionTime":null},{"type":"Degraded","status":"False","reason":"AsExpected","message":"","lastTransitionTime":null}]`,
 			},
 		},
 	}
@@ -580,6 +639,10 @@ func TestReconcile_HCFeedback_SetsHostedClusterResult(t *testing.T) {
 	require.NotNil(t, captured.Status.HostedClusterResult)
 	require.Equal(t, "api.my-cluster-user.example.com", captured.Status.HostedClusterResult.APIEndpoint)
 	require.Equal(t, "4.15.0", captured.Status.HostedClusterResult.Version)
+	require.Equal(t, "4.15.0", captured.Status.HostedClusterResult.DesiredVersion)
+	require.Equal(t, []string{"4.15.1", "4.15.2"}, captured.Status.HostedClusterResult.AvailableVersions)
+	require.Equal(t, metav1.ConditionTrue, meta.FindStatusCondition(captured.Status.Conditions, "ClusterVersionUpgradeable").Status)
+	require.Equal(t, metav1.ConditionFalse, meta.FindStatusCondition(captured.Status.Conditions, "HostedClusterDegraded").Status)
 }
 
 // TestReconcile_CreatedByAnnotationPropagated verifies that the created-by annotation
