@@ -25,8 +25,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
-
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
@@ -292,12 +290,7 @@ func TestConvertingResourceHandler_Delete_AlreadySoftDeleted_Idempotent(t *testi
 		t.Fatalf("expected object to still exist: %v", err)
 	}
 
-	clientObj, ok := existing.(client.Object)
-	if !ok {
-		t.Fatal("object does not implement client.Object")
-	}
-
-	if clientObj.GetDeletionTimestamp() == nil {
+	if existing.GetDeletionTimestamp() == nil {
 		t.Error("expected deletionTimestamp to still be set")
 	}
 }
@@ -340,12 +333,7 @@ func TestConvertingResourceHandler_Update_PreservesDeletionTimestamp(t *testing.
 		t.Fatalf("failed to get updated object: %v", err)
 	}
 
-	clientObj, ok := existing.(client.Object)
-	if !ok {
-		t.Fatal("object does not implement client.Object")
-	}
-
-	if clientObj.GetDeletionTimestamp() == nil {
+	if existing.GetDeletionTimestamp() == nil {
 		t.Error("expected deletionTimestamp to be preserved after update")
 	}
 }
