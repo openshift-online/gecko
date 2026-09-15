@@ -990,7 +990,7 @@ mvdan.cc/unparam v0.0.0-20260823230713-2fa3d841b0c8/go.mod h1:MrS/+zJ1M2xvGXhKkt
 rsc.io/binaryregexp v0.2.0/go.mod h1:qTv7/COck+e2FymRvadv62gMdZztPaShugOCi3I+8D8=
 rsc.io/quote/v3 v3.1.0/go.mod h1:yEA65RcK8LyAZtP9Kv3t0HmxON59tX3rD+tICJqUlj0=
 rsc.io/sampler v1.3.0/go.mod h1:T1hPZKmBbMNahiBKFy5HrXp6adAjACjK9JXDnKaTXpA=
-sigs.k8s.io/kube-api-linter v0.0.0-20260206102632-39e3d06a2850 h1:SdyNO1yIff2xcQ6aishcTRbaAuIDWzo7IvSgvY9L0W0=
-sigs.k8s.io/kube-api-linter v0.0.0-20260206102632-39e3d06a2850/go.mod h1:5mP60UakkCye+eOcZ5p98VnV2O49qreW1gq9TdsUf7Q=
+sigs.k8s.io/kube-api-linter v0.0.0-20260716143926-092fe0c72997 h1:u5/qbXZq7YIrurEE6HiJKtjQ9ILcFPJJSHNY0Q1ZRhU=
+sigs.k8s.io/kube-api-linter v0.0.0-20260716143926-092fe0c72997/go.mod h1:5mP60UakkCye+eOcZ5p98VnV2O49qreW1gq9TdsUf7Q=
 sigs.k8s.io/yaml v1.4.0 h1:Mk1wCc2gy/F0THH0TAp1QYyJNzRm2KCLy3o5ASXVI5E=
 sigs.k8s.io/yaml v1.4.0/go.mod h1:Ejl7/uTz7PSA4eKMyQCUTnhZYNmLIl+5c2lQPGR2BPY=

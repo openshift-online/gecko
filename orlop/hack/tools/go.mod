@@ -4,7 +4,7 @@ go 1.27rc2
 
 require (
 	github.com/golangci/golangci-lint/v2 v2.12.2
-	sigs.k8s.io/kube-api-linter v0.0.0-20260206102632-39e3d06a2850
+	sigs.k8s.io/kube-api-linter v0.0.0-20260716143926-092fe0c72997
 )
 
 require (
