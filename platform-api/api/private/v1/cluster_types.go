@@ -148,6 +148,7 @@ type ReleaseSpec struct {
 	// +orlop:public
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$`
 	Version string `json:"version"`
 	// +orlop:public
 	// +required
@@ -238,6 +239,10 @@ type VersionResolutionResult struct {
 	// ReleaseVersion is the resolved OCP version string (e.g. "4.16.3").
 	// +optional
 	ReleaseVersion string `json:"releaseVersion,omitempty"`
+	// DefaultVersion is the configured platform default at resolution time.
+	DefaultVersion string `json:"defaultVersion,omitempty"`
+	// LatestVersion is the latest supported release in CincinnatiChannel.
+	LatestVersion string `json:"latestVersion,omitempty"`
 	// CincinnatiChannel is the channel string used to query Cincinnati (e.g. "stable-4.16").
 	// Derived from ChannelGroup and the major.minor of ReleaseVersion.
 	// +optional
