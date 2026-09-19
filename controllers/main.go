@@ -14,6 +14,7 @@ import (
 	cmdnodepoolvrresolution "github.com/openshift-online/gecko/controllers/cmd/nodepoolvrresolution"
 	cmdplacement "github.com/openshift-online/gecko/controllers/cmd/placement"
 	cmdversionresolution "github.com/openshift-online/gecko/controllers/cmd/versionresolution"
+	cmdversionsync "github.com/openshift-online/gecko/controllers/cmd/versionsync"
 	"github.com/openshift-online/gecko/controllers/util/setup"
 )
 
@@ -49,6 +50,7 @@ func main() {
 	root.PersistentFlags().IntVar(&rf.Workers, "workers", 10, "Concurrent reconcile goroutines")
 
 	root.AddCommand(
+		cmdversionsync.NewCommand(rf),
 		cmdversionresolution.NewCommand(rf),
 		cmdnodepoolvrresolution.NewCommand(rf),
 		cmdplacement.NewCommand(rf),

@@ -3,9 +3,11 @@ package versionresolution
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -43,12 +45,19 @@ type CincinnatiGraph struct {
 	Nodes []ReleaseInfo `json:"nodes"`
 }
 
-// Resolve fetches the Cincinnati graph for the given channel and returns the
-// ReleaseInfo matching version. Returns nil, nil if the version is not found.
-func (c *CincinnatiClient) Resolve(ctx context.Context, version, channel string) (*ReleaseInfo, error) {
-	url := fmt.Sprintf("%s?channel=%s&arch=%s", c.BaseURL, channel, c.Arch)
+// ListReleases returns all releases advertised for a Cincinnati channel.
+func (c *CincinnatiClient) ListReleases(ctx context.Context, channel string) ([]ReleaseInfo, error) {
+	endpoint, err := url.Parse(c.BaseURL)
+	if err != nil {
+		return nil, errors.New("cincinnati: invalid base URL")
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	query := endpoint.Query()
+	query.Set("channel", channel)
+	query.Set("arch", c.Arch)
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("cincinnati: build request: %w", err)
 	}
@@ -56,7 +65,11 @@ func (c *CincinnatiClient) Resolve(ctx context.Context, version, channel string)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("cincinnati: GET %s: %w", url, err)
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return nil, fmt.Errorf("cincinnati: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -66,7 +79,7 @@ func (c *CincinnatiClient) Resolve(ctx context.Context, version, channel string)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("cincinnati: GET %s returned %d: %s", url, resp.StatusCode, string(body))
+		return nil, fmt.Errorf("cincinnati: unexpected HTTP status %d", resp.StatusCode)
 	}
 
 	var graph CincinnatiGraph
@@ -74,9 +87,20 @@ func (c *CincinnatiClient) Resolve(ctx context.Context, version, channel string)
 		return nil, fmt.Errorf("cincinnati: unmarshal response: %w", err)
 	}
 
-	for i := range graph.Nodes {
-		if graph.Nodes[i].Version == version {
-			return &graph.Nodes[i], nil
+	return graph.Nodes, nil
+}
+
+// Resolve fetches the Cincinnati graph for the given channel and returns the
+// ReleaseInfo matching version. Returns nil, nil if the version is not found.
+func (c *CincinnatiClient) Resolve(ctx context.Context, version, channel string) (*ReleaseInfo, error) {
+	releases, err := c.ListReleases(ctx, channel)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range releases {
+		if releases[i].Version == version {
+			return &releases[i], nil
 		}
 	}
 

@@ -1,0 +1,12 @@
+{{- range $name, $channel := .Values.channels }}
+apiVersion: gcp.managed.openshift.io/v1
+kind: Channel
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "gecko-version-sync.labels" $ | nindent 4 }}
+spec:
+  installDefaultVersion: {{ $channel.installDefaultVersion | quote }}
+  fleetMinorVersion: {{ $channel.fleetMinorVersion | quote }}
+---
+{{- end }}

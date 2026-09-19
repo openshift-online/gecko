@@ -9,6 +9,10 @@ import (
 )
 
 var (
+	// ChannelSchemaYAML contains the OpenAPI v3 schema for Channel.
+	//go:embed .schemas/channel_schema.yaml
+	ChannelSchemaYAML string
+
 	// ClusterSchemaYAML contains the OpenAPI v3 schema for Cluster.
 	//go:embed .schemas/cluster_schema.yaml
 	ClusterSchemaYAML string
@@ -17,7 +21,20 @@ var (
 	//go:embed .schemas/nodepool_schema.yaml
 	NodePoolSchemaYAML string
 
+	// VersionSchemaYAML contains the OpenAPI v3 schema for Version.
+	//go:embed .schemas/version_schema.yaml
+	VersionSchemaYAML string
+
 )
+
+// ChannelResourceInfo describes the Channel resource type.
+var ChannelResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("Channel"),
+	Plural:     "channels",
+	Singular:   "channel",
+	Namespaced: false,
+	SchemaYAML: ChannelSchemaYAML,
+}
 
 // ClusterResourceInfo describes the Cluster resource type.
 var ClusterResourceInfo = types.ResourceInfo{
@@ -71,11 +88,22 @@ var NodePoolResourceInfo = types.ResourceInfo{
 	},
 }
 
+// VersionResourceInfo describes the Version resource type.
+var VersionResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("Version"),
+	Plural:     "versions",
+	Singular:   "version",
+	Namespaced: false,
+	SchemaYAML: VersionSchemaYAML,
+}
+
 // GetResourceInfos returns ResourceInfo definitions for all types in this package.
 // This can be used to configure an API server with these resources.
 func GetResourceInfos() []types.ResourceInfo {
 	return []types.ResourceInfo{
+		ChannelResourceInfo,
 		ClusterResourceInfo,
 		NodePoolResourceInfo,
+		VersionResourceInfo,
 	}
 }
