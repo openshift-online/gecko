@@ -51,7 +51,7 @@ Before adding or changing an API resource, consider:
 | Define | Add the resource and list types under `api/private/<version>/` with the correct Kubebuilder markers. |
 | Expose | Add `+orlop:public` only to types and fields intended for customers. |
 | Register | Register both the resource and list type in the package `init()` function. |
-| Relate | If the resource is nested, add one entry to `parentResourcesByKind`; do not duplicate private/public registration logic. |
+| Relate | If the resource is nested, configure its parent relationship consistently in `getPrivateResources()` and `getPublicResources()`; inspect `NodePool` as the existing example. |
 | Generate | Run `make -C platform-api generate` from the repository root, or `make generate` inside `platform-api/`. |
 | Review | Confirm generated `GetResourceInfos()` includes the resource and inspect public types, conversions, deep-copy methods, and OpenAPI schemas. |
 | Persist | Do not hand-write a database table solely for a new resource. Orlop creates the configured backing store from the registered `GroupKind`; add migrations only when the storage model itself changes. |
@@ -73,14 +73,14 @@ and normal `kubectl` access on the applicable surface.
 - A child resource is independently stored and remains available through its
   normal Kubernetes resource path. A nested route is an additional parent-filtered
   view; it does not embed the child in the parent response.
-- Configure nested resources in `cmd/platform-api-server/resources.go` through
-  the declarative `parentResourcesByKind` map. Do not add duplicate kind-specific
-  branches to private and public registration.
+- Configure nested resources in `cmd/platform-api-server/resources.go` by
+  setting `ParentResource` in both `getPrivateResources()` and
+  `getPublicResources()`, following the existing `NodePool` implementation.
 - For a Cluster child, use the Cluster `GroupKind` and `Plural: "clusters"`.
   Follow the established relationship field for that resource; existing Gecko
   Cluster children such as `NodePool` use `spec.clusterID`.
-- Apply the same parent relationship to the private and public registries through
-  the shared helper. Test both direct and nested routes when changing this code.
+- Keep the parent relationship values consistent across the private and public
+  registrations. Test both direct and nested routes when changing this code.
 
 ### Status ownership
 
@@ -102,8 +102,8 @@ lifecycle independently on parent and child resources.
 - Flag public fields missing `+orlop:public`, private implementation details
   exposed unintentionally, or API source changes without regenerated artifacts.
 - Flag incompatible removal or renaming of a public API field or resource.
-- Flag nested resources implemented with duplicated registration branches
-  instead of `parentResourcesByKind`, or child resources embedded into Cluster
+- Flag missing or inconsistent parent relationship configuration across the
+  private and public registrations, or child resources embedded into Cluster
   responses solely for client convenience.
 
 ## Common pitfalls
@@ -111,7 +111,8 @@ lifecycle independently on parent and child resources.
 1. Editing generated files instead of private API source types.
 2. Forgetting `+orlop:public`, causing a field to disappear from the public API.
 3. Adding a root type without registering both the resource and its list type.
-4. Adding a child resource without an entry in `parentResourcesByKind`.
+4. Adding a child resource without configuring its parent relationship in both
+   the private and public registrations.
 5. Running a generator but ignoring legitimate changes to existing schemas,
    conversions, or deep-copy methods.
 6. Testing only a nested endpoint and breaking standard Kubernetes access, or
