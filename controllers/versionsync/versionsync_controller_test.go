@@ -39,13 +39,15 @@ func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration
 	return nil
 }
 
-// mockStoreClient is a minimal client.Client backed by Version resources.
+// mockStoreClient is a minimal client.Client backed by Version and Channel resources.
 type mockStoreClient struct {
-	versions []privatev1.Version
-	created  []*privatev1.Version
-	updated  []*privatev1.Version
-	deleted  []*privatev1.Version
-	listed   bool
+	versions       []privatev1.Version
+	channels       []privatev1.Channel
+	created        []*privatev1.Version
+	updated        []*privatev1.Version
+	deleted        []*privatev1.Version
+	listedChannels bool
+	listedVersions bool
 }
 
 func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
@@ -53,12 +55,16 @@ func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, _ client.Ob
 }
 
 func (m *mockStoreClient) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
-	m.listed = true
-	versionList, ok := list.(*privatev1.VersionList)
-	if !ok {
+	switch typedList := list.(type) {
+	case *privatev1.VersionList:
+		m.listedVersions = true
+		typedList.Items = append([]privatev1.Version(nil), m.versions...)
+	case *privatev1.ChannelList:
+		m.listedChannels = true
+		typedList.Items = append([]privatev1.Channel(nil), m.channels...)
+	default:
 		return fmt.Errorf("unexpected list type %T", list)
 	}
-	versionList.Items = append([]privatev1.Version(nil), m.versions...)
 	return nil
 }
 
@@ -169,7 +175,7 @@ func TestFetchVersions(t *testing.T) {
 	defer server.Close()
 
 	controller := newController(t, server, &mockStoreClient{})
-	versions, err := controller.fetchVersions(context.Background(), newTestLogger(t))
+	versions, err := controller.fetchVersions(context.Background(), newTestLogger(t), []string{"stable", "fast"})
 
 	require.NoError(t, err)
 	require.Len(t, versions, 2)
@@ -202,7 +208,7 @@ func TestFetchVersionsRejectsConflictingPayloads(t *testing.T) {
 	defer server.Close()
 
 	controller := newController(t, server, &mockStoreClient{})
-	_, err := controller.fetchVersions(context.Background(), newTestLogger(t))
+	_, err := controller.fetchVersions(context.Background(), newTestLogger(t), []string{"stable", "fast"})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "conflicting release payloads")
@@ -220,7 +226,7 @@ func TestFetchVersionsRejectsEmptyPayload(t *testing.T) {
 	defer server.Close()
 
 	controller := newController(t, server, &mockStoreClient{})
-	_, err := controller.fetchVersions(context.Background(), newTestLogger(t))
+	_, err := controller.fetchVersions(context.Background(), newTestLogger(t), []string{"stable"})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "has no payload")
@@ -232,17 +238,56 @@ func TestSyncPreservesSnapshotOnFetchFailure(t *testing.T) {
 	})
 	defer server.Close()
 
-	store := &mockStoreClient{versions: []privatev1.Version{
-		{ObjectMeta: objectMeta("4.22.11")},
-	}}
+	store := &mockStoreClient{
+		channels: []privatev1.Channel{{ObjectMeta: objectMeta("stable")}},
+		versions: []privatev1.Version{
+			{ObjectMeta: objectMeta("4.22.11")},
+		},
+	}
 	controller := newController(t, server, store)
 
 	controller.sync(context.Background(), newTestLogger(t))
 
-	assert.False(t, store.listed)
+	assert.True(t, store.listedChannels)
+	assert.False(t, store.listedVersions)
 	assert.Empty(t, store.created)
 	assert.Empty(t, store.updated)
 	assert.Empty(t, store.deleted)
+}
+
+func TestSyncPreservesSnapshotWhenNoChannelsExist(t *testing.T) {
+	server := newCincinnatiServer(t, func(_ string) ([]versionresolution.ReleaseInfo, int) {
+		return []versionresolution.ReleaseInfo{
+			{Version: "4.22.11", Payload: "quay.io/release:4.22.11"},
+		}, http.StatusOK
+	})
+	defer server.Close()
+
+	store := &mockStoreClient{}
+	controller := newController(t, server, store)
+
+	controller.sync(context.Background(), newTestLogger(t))
+
+	assert.True(t, store.listedChannels)
+	assert.False(t, store.listedVersions)
+	assert.Empty(t, store.created)
+	assert.Empty(t, store.updated)
+	assert.Empty(t, store.deleted)
+}
+
+func TestChannelGroupsAreReadFromChannelResources(t *testing.T) {
+	store := &mockStoreClient{channels: []privatev1.Channel{
+		{ObjectMeta: objectMeta("nightly")},
+		{ObjectMeta: objectMeta("prerelease")},
+		{ObjectMeta: objectMeta("stable")},
+	}}
+	controller := &Controller{apiClient: store}
+
+	groups, err := controller.channelGroups(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"nightly", "prerelease", "stable"}, groups)
+	assert.True(t, store.listedChannels)
 }
 
 func TestApplyCreatesUpdatesAndDeletesVersions(t *testing.T) {
