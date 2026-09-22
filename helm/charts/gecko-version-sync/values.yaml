@@ -17,6 +17,9 @@ cincinnati:
   url: "https://api.openshift.com/api/upgrades_info/v1/graph"
   arch: amd64
 
+# Channel CRs created by this map also define the Cincinnati channel groups that
+# version-sync probes. For example, prod may use stable/fast/candidate/eus while
+# non-prod may use stable/prerelease/nightly with the CI Cincinnati endpoint.
 channels: {}
 
 serviceAccount:

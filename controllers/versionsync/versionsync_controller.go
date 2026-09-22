@@ -35,8 +35,6 @@ const (
 	maxChannelProbes = 256
 )
 
-var channelGroups = []string{"stable", "fast", "candidate", "eus"}
-
 // Controller synchronizes Version resources from Cincinnati.
 type Controller struct {
 	cincinnatiClient *versionresolution.CincinnatiClient
@@ -83,7 +81,18 @@ func (c *Controller) NeedLeaderElection() bool {
 
 // sync fetches the desired version snapshot from Cincinnati and applies it to the API.
 func (c *Controller) sync(ctx context.Context, log logger.Logger) {
-	desired, err := c.fetchVersions(ctx, log)
+	channelGroups, err := c.channelGroups(ctx)
+	if err != nil {
+		log.Errorf(ctx, "list channels failed, preserving previous version snapshot: %v", err)
+		return
+	}
+
+	if len(channelGroups) == 0 {
+		log.Error(ctx, "no Channel resources found, preserving previous version snapshot")
+		return
+	}
+
+	desired, err := c.fetchVersions(ctx, log, channelGroups)
 	if err != nil {
 		log.Errorf(ctx, "fetch failed, preserving previous version snapshot: %v", err)
 		return
@@ -97,6 +106,7 @@ func (c *Controller) sync(ctx context.Context, log logger.Logger) {
 func (c *Controller) fetchVersions(
 	ctx context.Context,
 	log logger.Logger,
+	channelGroups []string,
 ) (map[string]privatev1.VersionSpec, error) {
 	minimumMajor, minimumMinor, valid := parseMajorMinor(minimumSupportedVersion)
 	if !valid {
@@ -195,6 +205,21 @@ func (c *Controller) fetchVersions(
 	)
 
 	return versions, nil
+}
+
+func (c *Controller) channelGroups(ctx context.Context) ([]string, error) {
+	var channels privatev1.ChannelList
+	if err := c.apiClient.List(ctx, &channels); err != nil {
+		return nil, fmt.Errorf("list channels: %w", err)
+	}
+
+	groups := make([]string, 0, len(channels.Items))
+	for i := range channels.Items {
+		groups = append(groups, channels.Items[i].Name)
+	}
+	sort.Strings(groups)
+
+	return groups, nil
 }
 
 func (c *Controller) apply(
