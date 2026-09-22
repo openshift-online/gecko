@@ -49,12 +49,12 @@ repository root.
 | Format all modules | `make lint-fmt` |
 | Test all modules | `make test` |
 | Lint all modules | `make lint` |
-| Test one module | `make -C <orlop\|platform-api\|controllers> test` |
+| Test one module | `make -C orlop test`, `make -C platform-api test`, or `make -C controllers test` |
 | Run focused tests | Run `go test ./path/...` from the owning module directory |
 | Generate platform APIs | `make -C platform-api generate` |
 | Generate Orlop artifacts | `make -C orlop generate` |
 | Build the platform API | `make -C platform-api build` |
-| Check patch whitespace | `git diff --check` |
+| Check patch whitespace | `git diff HEAD --check` |
 
 ### Before making changes
 
@@ -84,7 +84,7 @@ repository root.
 ### Final validation
 
 Before final handoff, run `make lint-fmt`, `make test`, `make lint`, and
-`git diff --check` when the change scope permits repository-wide checks. If
+`git diff HEAD --check` when the change scope permits repository-wide checks. If
 any are not run, state exactly which checks were skipped and why.
 Summarize what changed and why, the validation performed, and any known risks,
 limitations, or follow-up work.

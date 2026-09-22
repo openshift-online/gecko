@@ -90,6 +90,8 @@ lifecycle independently on parent and child resources.
 
 ## Testing and review
 
+- Run `make -C platform-api lint` to run `golangci-lint` with
+  `sigs.k8s.io/kube-api-linter` and further validate Platform API changes.
 - API type or marker changes: regenerate, run `make -C platform-api test` from
   the repository root or `make test` inside `platform-api/`, and inspect the
   public types and OpenAPI schema diff.
