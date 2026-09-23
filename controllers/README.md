@@ -22,27 +22,36 @@ Gecko controllers use controller-runtime's `Manager`, `Reconciler` interface, an
 
 ```mermaid
 graph TD
-    A[Cluster CR created] --> B[placement]
-    A --> C[version-resolution]
-    A --> K((Cluster Status))
+    A[Cluster CR] -->|reconciles| B[placement]
+    A -->|reconciles| C[version-resolution]
+    A ---|has .status| K((Cluster .status))
 
     B -->|writes PlacementResult| K
     C -->|writes VersionResolution| K
 
     K -->|PlacementResult + VR| D[hc-controller]
 
-    E[NodePool CR created] --> G[nodepoolvrresolution]
+    E[NodePool CR] -->|reconciles| G[nodepoolvrresolution]
     G -->|VersionResolution| F[nodepool-controller]
     F -.->|reads parent Cluster status| K
 
-    D -->|Apply| H[(Firestore)]
-    F -->|Apply| H
+    D --> X[Gecko Firestore transport]
+    F --> X
 
-    H <-->|Desires / Status| I[kube-applier-gcp]
-    I <-->|Apply / Feedback| J[Management Cluster]
+    subgraph T[Cross-cluster transport]
+        direction LR
+        S[(Firestore<br/>specs)]
+        I[kube-applier-gcp]
+        J[Kubernetes API]
+        ST[(Firestore<br/>status)]
+    end
 
-    H -.->|GetStatus| D
-    H -.->|GetStatus| F
+    X -->|writes desires<br/>datastore.user| S
+    S -.->|snapshot listeners<br/>datastore.viewer| I
+    I -->|apply/read/delete| J
+    J -->|observed resource state| I
+    I -->|writes status<br/>datastore.user| ST
+    ST -->|read status<br/>datastore.viewer| X
 
     style K fill:#f5a623,color:#fff
     style B fill:#4a90d9,color:#fff
@@ -50,7 +59,9 @@ graph TD
     style D fill:#e07b39,color:#fff
     style F fill:#e07b39,color:#fff
     style G fill:#4a90d9,color:#fff
-    style H fill:#50b83c,color:#fff
+    style X fill:#e07b39,color:#fff
+    style S fill:#50b83c,color:#fff
+    style ST fill:#50b83c,color:#fff
     style I fill:#9b59b6,color:#fff
     style J fill:#9b59b6,color:#fff
 ```
@@ -105,25 +116,26 @@ The transport layer abstracts how manifests are delivered to management clusters
 
 ```mermaid
 sequenceDiagram
-    participant C as Controller
-    participant FS as Firestore
+    participant C as Gecko controller
+    participant S as Firestore specs
     participant KA as kube-applier-gcp
     participant MC as Management Cluster
+    participant T as Firestore status
 
-    C->>FS: Apply(manifests)
-    Note over FS: ApplyDesire + ReadDesire docs
-    KA->>FS: Poll for desires
-    KA->>MC: Apply manifests
-    MC-->>KA: Resource status
-    KA-->>FS: Write status feedback
-    C->>FS: GetStatus()
-    FS-->>C: Conditions + resource status
+    C->>S: Write Apply/Read/DeleteDesire docs
+    KA->>S: Open persistent snapshot listeners
+    S-->>KA: Desire change
+    KA->>MC: Apply/read/delete resource
+    MC-->>KA: Resource state
+    KA->>T: Write status documents
+    C->>T: Read status during reconciliation
+    T-->>C: Conditions + resource status
 ```
 
 The `transport.Client` interface supports:
-- `Apply` — writes ApplyDesire + ReadDesire documents (manifests to apply and resources to monitor)
-- `GetStatus` — reads feedback conditions and per-resource status
-- `Delete` / `GetDeleteStatus` / `CleanupDeleteDesires` — async deletion flow
+- `Apply` — writes one ApplyDesire and one ReadDesire per resource to the `specs` database
+- `GetStatus` — reads status conditions and observed resource content from the `status` database
+- `Delete` / `GetDeleteStatus` / `CleanupDeleteDesires` — writes and observes the asynchronous deletion flow
 
 Implementations:
 - **Firestore** (`client/transport/firestore/`) — production implementation using paired Firestore databases per MC
@@ -132,14 +144,16 @@ Implementations:
 ## Key Design Patterns
 
 ### Desire Documents
-Controllers express intent (Apply/Read/Delete desires) in Firestore rather than applying directly. A separate `kube-applier-gcp` service on each MC processes these desires asynchronously. This decouples the control plane from management clusters.
+Controllers express intent (Apply/Read/Delete desires) in the `specs` database rather than applying directly. A separate `kube-applier-gcp` service on each MC watches that database with Firestore snapshot listeners, processes desires asynchronously, and writes feedback to the `status` database. This decouples the control plane from management clusters.
 
 ### Finalizer-Based Async Deletion
 1. `Delete()` enqueues DeleteDesire documents
-2. Controller requeues, polling `GetDeleteStatus()` until all desires report success
-3. `CleanupDeleteDesires()` removes the DeleteDesire spec documents; kube-applier-gcp
-   cleans up the corresponding status documents. Deploy its status-cleanup support
-   before this behavior so retained status records are reaped.
+2. Controller requeues while deletion is pending; `GetDeleteStatus()` reads
+   DeleteDesire and ApplyDesire documents from `specs` and, when DeleteDesires
+   exist, matching status documents from `status`.
+3. `CleanupDeleteDesires()` removes the DeleteDesire spec documents; the
+   kube-applier-gcp status-cleanup path removes the corresponding status
+   documents so retained status records are reaped.
 4. Finalizer is removed, allowing Kubernetes garbage collection to complete
 
 ### Requeue Strategy
