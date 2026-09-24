@@ -8,10 +8,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-logr/logr"
+	openapi_v2 "github.com/google/gnostic-models/openapiv2"
 
 	testv1 "github.com/openshift-online/gecko/orlop/apis/private/test/v1"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
@@ -21,7 +23,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/apiserver/pkg/server/healthz"
+	openapiproto "k8s.io/kube-openapi/pkg/util/proto"
 )
 
 type integrationTestEnv struct {
@@ -165,6 +169,47 @@ func TestIntegration_OpenAPIV3(t *testing.T) {
 	expectedGroupPath := "apis/test.orlop.gcp.managed.openshift.io/v1"
 	if _, found := paths[expectedGroupPath]; !found {
 		t.Errorf("expected path %q in OpenAPI v3, got paths: %v", expectedGroupPath, keysOf(paths))
+	}
+}
+
+func TestIntegration_OpenAPIV2SupportsStrategicPatchOfMetadata(t *testing.T) {
+	env := setupIntegrationTest(t)
+
+	resp, err := env.client.Get(env.url("/openapi/v2"))
+	if err != nil {
+		t.Fatalf("get OpenAPI v2 document: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 from OpenAPI v2 endpoint, got %d: %s", resp.StatusCode, body)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read OpenAPI v2 document: %v", err)
+	}
+
+	document, err := openapi_v2.ParseDocument(body)
+	if err != nil {
+		t.Fatalf("parse OpenAPI v2 document: %v", err)
+	}
+	models, err := openapiproto.NewOpenAPIData(document)
+	if err != nil {
+		t.Fatalf("load OpenAPI v2 models: %v", err)
+	}
+	definitionName := strings.ReplaceAll(goTypeName(&testv1.Object{}), "/", "~1")
+	schema := models.LookupModel(definitionName)
+	if schema == nil {
+		t.Fatalf("OpenAPI v2 document did not contain the Object schema")
+	}
+
+	original := []byte(`{"apiVersion":"test.orlop.gcp.managed.openshift.io/v1","kind":"Object","metadata":{"name":"test","namespace":"default"},"spec":{"publicField":"old"}}`)
+	modified := []byte(`{"apiVersion":"test.orlop.gcp.managed.openshift.io/v1","kind":"Object","metadata":{"annotations":{"argocd.argoproj.io/tracking-id":"argocd:Channel:test"},"name":"test","namespace":"default"},"spec":{"publicField":"new"}}`)
+	current := []byte(`{"apiVersion":"test.orlop.gcp.managed.openshift.io/v1","kind":"Object","metadata":{"annotations":{"private.orlop.gcp.managed.openshift.io/created-by":"user@example.com"},"name":"test","namespace":"default"},"spec":{"publicField":"old"}}`)
+
+	if _, err := strategicpatch.CreateThreeWayMergePatch(original, modified, current, strategicpatch.NewPatchMetaFromOpenAPI(schema), true); err != nil {
+		t.Fatalf("calculate strategic patch using served OpenAPI v2 schema: %v", err)
 	}
 }
 

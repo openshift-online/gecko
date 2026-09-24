@@ -9,6 +9,7 @@ import (
 	generatedopenapi "github.com/openshift-online/gecko/orlop/pkg/generated/openapi"
 
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	openapicommon "k8s.io/kube-openapi/pkg/common"
 	"k8s.io/kube-openapi/pkg/validation/spec"
@@ -28,6 +29,13 @@ func buildOpenAPIDefinitions(scheme *runtime.Scheme, resources []types.ResourceI
 			if err != nil {
 				continue
 			}
+			if _, ok := schema.Properties["metadata"]; ok {
+				schema.Properties["metadata"] = spec.Schema{
+					SchemaProps: spec.SchemaProps{
+						Ref: ref(metav1.ObjectMeta{}.OpenAPIModelName()),
+					},
+				}
+			}
 
 			gvkExtension := map[string]interface{}{
 				"group":   res.GVK.Group,
@@ -40,9 +48,11 @@ func buildOpenAPIDefinitions(scheme *runtime.Scheme, resources []types.ResourceI
 			if err != nil {
 				continue
 			}
-			defs[goTypeName(obj)] = openapicommon.OpenAPIDefinition{
-				Schema: *schema,
+			definition := openapicommon.OpenAPIDefinition{Schema: *schema}
+			if _, ok := schema.Properties["metadata"]; ok {
+				definition.Dependencies = []string{metav1.ObjectMeta{}.OpenAPIModelName()}
 			}
+			defs[goTypeName(obj)] = definition
 
 			listGVK := res.GVK.GroupVersion().WithKind(res.GVK.Kind + "List")
 			listObj, err := scheme.New(listGVK)
