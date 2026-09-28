@@ -3,7 +3,7 @@ replicaCount: 1
 image:
   registry: us-docker.pkg.dev
   repository: gcp-hcp-commons/gcp-hcp-images/gecko-platform-api-server
-  tag: "365ddef"
+  tag: "5fcfdc1"
   pullPolicy: Always
 
 nameOverride: ""
