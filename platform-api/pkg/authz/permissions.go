@@ -31,6 +31,14 @@ const (
 	DeleteRole        Action = "DeleteRole"
 )
 
+const (
+	CreateControlPlaneUpgradePolicy Action = "CreateControlPlaneUpgradePolicy"
+	ListControlPlaneUpgradePolicies Action = "ListControlPlaneUpgradePolicies"
+	GetControlPlaneUpgradePolicy    Action = "GetControlPlaneUpgradePolicy"
+	UpdateControlPlaneUpgradePolicy Action = "UpdateControlPlaneUpgradePolicy"
+	DeleteControlPlaneUpgradePolicy Action = "DeleteControlPlaneUpgradePolicy"
+)
+
 var permissionActions = map[string]Action{
 	"cluster.create":     CreateCluster,
 	"cluster.list":       ListClusters,
@@ -52,6 +60,12 @@ var permissionActions = map[string]Action{
 	"role.get":           GetRole,
 	"role.update":        UpdateRole,
 	"role.delete":        DeleteRole,
+
+	"controlplaneupgradepolicy.create": CreateControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.list":   ListControlPlaneUpgradePolicies,
+	"controlplaneupgradepolicy.get":    GetControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.update": UpdateControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.delete": DeleteControlPlaneUpgradePolicy,
 }
 
 func actionForPermission(permission string) (Action, bool) {
@@ -100,6 +114,8 @@ func pluralToResource(plural string) string {
 		return "cluster"
 	case "nodepools":
 		return "nodepool"
+	case "controlplaneupgradepolicies":
+		return "controlplaneupgradepolicy"
 	case "roles":
 		return "role"
 	case "rolebindings":
