@@ -68,6 +68,18 @@ type MyResource struct {
 - Enums: string type aliases, CamelCase values, declared with `+kubebuilder:validation:Enum=A;B;C`.
 - Defaults: `// +default=<value>` for scalars. List defaults cannot be expressed as markers; document in the comment.
 
+**Prefer standard markers over kubebuilder-specific equivalents.** Where a
+standard controller-tools or upstream marker exists, use it instead of the
+`+kubebuilder:` prefixed variant. Standard markers are toolchain-agnostic and
+work with a wider range of generators.
+
+| Prefer | Over |
+|---|---|
+| `// +default=<value>` | `// +kubebuilder:default=<value>` |
+| `// +optional` | `// +kubebuilder:validation:Optional` |
+| `// +required` | `// +kubebuilder:validation:Required` |
+| `// +listType=<type>` | `// +kubebuilder:validation:ListType=<type>` |
+
 **Documentation** — every field MUST have a comment starting with the JSON field name:
 
 ```go
