@@ -164,7 +164,12 @@ func TestReconciler_HappyPath(t *testing.T) {
 		Version: "4.22.0-ec.4",
 		Payload: "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
 	}
-	cincSrv := newMockCincinnati(release)
+	var requestedChannel string
+	cincSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedChannel = r.URL.Query().Get("channel")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CincinnatiGraph{Nodes: []ReleaseInfo{*release}}) //nolint:errcheck
+	}))
 	defer cincSrv.Close()
 
 	cluster := &privatev1.Cluster{}
@@ -182,6 +187,7 @@ func TestReconciler_HappyPath(t *testing.T) {
 	require.False(t, storeClient.updateCalled, "expected no spec Update (result written to status)")
 	require.NotNil(t, storeClient.statusWriter)
 	require.True(t, storeClient.statusWriter.called, "expected Status().Update to be called")
+	require.Equal(t, "stable-4.22", requestedChannel)
 }
 
 func TestReconciler_AlreadyResolved(t *testing.T) {
@@ -195,7 +201,7 @@ func TestReconciler_AlreadyResolved(t *testing.T) {
 	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{
 		ReleaseImage:      "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
 		ReleaseVersion:    "4.22.0-ec.4",
-		CincinnatiChannel: "candidate-4.22",
+		CincinnatiChannel: "stable-4.22",
 	}
 
 	r, storeClient := buildReconciler(t, cluster, cincSrv)
