@@ -254,6 +254,47 @@ func TestReconcile_SelectsZStreamCandidate_PatchesSpec(t *testing.T) {
 	require.NotNil(t, captured.Status.ControlPlaneUpgrade.RequestedAt)
 }
 
+func TestReconcile_ZStreamDoesNotRequireChannel(t *testing.T) {
+	cluster := readyCluster("cluster-1", "4.15.0", []string{"4.15.1"})
+
+	r, storeClient := buildReconciler(t, cluster)
+	storeClient.channel = nil
+
+	result, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
+
+	require.NoError(t, err)
+	require.Equal(t, requeueObserving, result.RequeueAfter)
+	require.True(t, storeClient.patchCalled)
+
+	patched := storeClient.patched.(*privatev1.Cluster)
+	require.Equal(t, "4.15.1", patched.Spec.Release.Version)
+}
+
+func TestReconcile_PrefersAuthorizedYStreamCandidate(t *testing.T) {
+	cluster := readyCluster("cluster-1", "4.22.14", []string{"4.22.17", "4.23.0-ec.1"})
+	cluster.Spec.Release.ChannelGroup = "candidate"
+	meta.SetStatusCondition(&cluster.Status.HostedClusterResult.ObservedConditions, metav1.Condition{
+		Type: "ClusterVersionUpgradeable", Status: metav1.ConditionTrue, Reason: "AsExpected",
+	})
+
+	r, storeClient := buildReconciler(t, cluster)
+	storeClient.channel.Name = "candidate"
+	storeClient.channel.Spec.FleetMinorVersion = "4.23"
+
+	result, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
+
+	require.NoError(t, err)
+	require.Equal(t, requeueObserving, result.RequeueAfter)
+	require.True(t, storeClient.patchCalled)
+
+	patched := storeClient.patched.(*privatev1.Cluster)
+	require.Equal(t, "4.23.0-ec.1", patched.Spec.Release.Version)
+
+	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
+	require.NotNil(t, captured.Status.ControlPlaneUpgrade)
+	require.Equal(t, "4.23.0-ec.1", captured.Status.ControlPlaneUpgrade.TargetVersion)
+}
+
 // TestReconcile_BlockedOnUnknownDegradation verifies that an absent or Unknown
 // HostedClusterDegraded reading blocks target selection exactly like a confirmed
 // True does — deny by default rather than proceeding without positive evidence.

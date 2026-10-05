@@ -158,16 +158,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	candidate := zCandidate
 	isYStream := false
-	if candidate == "" {
-		// No Z-stream update is available. Channel is consulted only when considering
-		// a Y-stream target because fleetMinorVersion is its authorization boundary.
-		var channel privatev1.Channel
-		channelName := cluster.Spec.Release.ChannelGroup
-		if channelName == "" {
-			channelName = "stable"
-		}
-		if err := r.apiClient.Get(ctx, client.ObjectKey{Name: channelName}, &channel); err != nil {
-			if apierrors.IsNotFound(err) {
+
+	// Channel is consulted for Y-stream authorization even when a Z-stream update
+	// is also available. Prefer an authorized Y-stream target so a patch update does
+	// not consume an upgrade edge that is needed to enter the next minor version.
+	var channel privatev1.Channel
+	channelName := cluster.Spec.Release.ChannelGroup
+	if channelName == "" {
+		channelName = "stable"
+	}
+	if err := r.apiClient.Get(ctx, client.ObjectKey{Name: channelName}, &channel); err != nil {
+		if apierrors.IsNotFound(err) {
+			if candidate == "" {
 				log.Infof(ctx, "channel %q not found, skipping y-stream target selection", channelName)
 				return r.writeStatus(ctx, &cluster, result, requeuePending,
 					newCondition(conditionAvailable, metav1.ConditionUnknown, "ChannelNotFound",
@@ -177,10 +179,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 					newCondition(conditionDegraded, metav1.ConditionFalse, "AsExpected", ""),
 				)
 			}
+			log.Infof(ctx, "channel %q not found, proceeding with z-stream target %s", channelName, candidate)
+		} else {
 			return reconcile.Result{}, fmt.Errorf("%s: get channel %q: %w", adapterName, channelName, err)
 		}
-
-		candidate, err = selectYStreamCandidate(completed, hc.AvailableUpdates, channel.Spec.FleetMinorVersion)
+	} else {
+		yCandidate, err := selectYStreamCandidate(completed, hc.AvailableUpdates, channel.Spec.FleetMinorVersion)
 		if err != nil {
 			return r.writeStatus(ctx, &cluster, result, requeueStable,
 				newCondition(conditionAvailable, metav1.ConditionFalse, "TargetSelectionFailed", err.Error()),
@@ -189,7 +193,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				newCondition(conditionDegraded, metav1.ConditionTrue, "TargetSelectionFailed", err.Error()),
 			)
 		}
-		isYStream = candidate != ""
+		// TODO: Revisit target priority when progressive rollout introduces an
+		// explicit admission policy for choosing between available streams.
+		if yCandidate != "" {
+			candidate = yCandidate
+			isYStream = true
+		}
 	}
 
 	if candidate == "" {

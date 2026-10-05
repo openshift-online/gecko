@@ -59,24 +59,32 @@ func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration
 // mockStoreClient is a minimal client.Client backed by a fixed Cluster.
 type mockStoreClient struct {
 	cluster      *privatev1.Cluster
+	channel      *privatev1.Channel
 	getErr       error
 	updateCalled bool
 	statusWriter *mockStatusWriter
 }
 
-func (m *mockStoreClient) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+func (m *mockStoreClient) Get(_ context.Context, key client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	if m.getErr != nil {
 		return m.getErr
 	}
-	if m.cluster == nil {
-		return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, "")
-	}
-	c, ok := obj.(*privatev1.Cluster)
-	if !ok {
+	switch typed := obj.(type) {
+	case *privatev1.Cluster:
+		if m.cluster == nil {
+			return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, key.Name)
+		}
+		*typed = *m.cluster
+		return nil
+	case *privatev1.Channel:
+		if m.channel == nil || m.channel.Name != key.Name {
+			return apierrors.NewNotFound(schema.GroupResource{Resource: "channel"}, key.Name)
+		}
+		*typed = *m.channel
+		return nil
+	default:
 		return fmt.Errorf("unexpected type %T", obj)
 	}
-	*c = *m.cluster
-	return nil
 }
 
 func (m *mockStoreClient) Update(_ context.Context, _ client.Object, _ ...client.UpdateOption) error {
@@ -199,6 +207,36 @@ func TestReconciler_AlreadyResolved(t *testing.T) {
 	require.False(t, storeClient.updateCalled, "expected no spec Update")
 }
 
+func TestReconciler_FleetMinorAdvancesCincinnatiChannel(t *testing.T) {
+	var requestedChannel string
+	cincSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedChannel = r.URL.Query().Get("channel")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CincinnatiGraph{Nodes: []ReleaseInfo{{ //nolint:errcheck
+			Version: "4.22.14",
+			Payload: "quay.io/openshift-release-dev/ocp-release:4.22.14-x86_64",
+		}}})
+	}))
+	defer cincSrv.Close()
+
+	cluster := &privatev1.Cluster{}
+	cluster.SetName("cluster-ystream")
+	cluster.SetNamespace("hyperfleet")
+	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.14", ChannelGroup: "candidate"}
+
+	channel := &privatev1.Channel{}
+	channel.SetName("candidate")
+	channel.Spec.FleetMinorVersion = "4.23"
+
+	storeClient := &mockStoreClient{cluster: cluster, channel: channel}
+	r := NewReconciler(NewCincinnatiClient(cincSrv.URL, "amd64"), newTestLogger(t), storeClient)
+
+	_, err := r.Reconcile(context.Background(), clusterReq("cluster-ystream"))
+
+	require.NoError(t, err)
+	require.Equal(t, "candidate-4.23", requestedChannel)
+}
+
 func TestReconciler_ClusterNotFound(t *testing.T) {
 	cincSrv := newMockCincinnati(nil)
 	defer cincSrv.Close()
@@ -269,6 +307,28 @@ func TestBuildChannel(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, tc.want, got)
 			}
+		})
+	}
+}
+
+func TestNextChannelVersion(t *testing.T) {
+	cases := []struct {
+		name       string
+		version    string
+		fleetMinor string
+		want       string
+	}{
+		{name: "same minor", version: "4.22.14", fleetMinor: "4.22", want: "4.22.14"},
+		{name: "next minor", version: "4.22.14", fleetMinor: "4.23", want: "4.23.0"},
+		{name: "one minor at a time", version: "4.22.14", fleetMinor: "4.24", want: "4.23.0"},
+		{name: "different major", version: "4.22.14", fleetMinor: "5.0", want: "4.22.14"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := nextChannelVersion(tc.version, tc.fleetMinor)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
