@@ -48,14 +48,6 @@ const (
 	requeueObserving = 30 * time.Second
 	// requeueStable is used once there is nothing to do until the next event.
 	requeueStable = 5 * time.Minute
-
-	// minimumSignalDuration is how long a degraded/not-succeeding signal must have
-	// persisted, per its own LastTransitionTime as reported by HyperShift/CVO, before
-	// it is treated as a terminal upgrade failure rather than transient rollout noise
-	// (e.g. a control-plane pod restarting mid-rollout). This is a deliberately simple
-	// heuristic, not a full stall-detection design; what defines a stalled upgrade and
-	// who owns retry/remediation is an open question for a later milestone.
-	minimumSignalDuration = 2 * time.Minute
 )
 
 // Reconciler selects and observes automatic control-plane upgrades for one Cluster
@@ -317,27 +309,12 @@ func activeTarget(completed, desired, specVersion string) (active bool, target s
 	return false, ""
 }
 
-// upgradeFailureReason inspects HC-observed conditions for signs that the active
-// rollout has failed or stalled. Unknown conditions (e.g. from a transient feedback
-// gap) are never treated as failure — only a confirmed False/True signal is, and
-// only once it has persisted for at least minimumSignalDuration according to the
-// condition's own LastTransitionTime (as reported by HyperShift/CVO, not recomputed
-// by Gecko). A single snapshot is not enough: control-plane components can degrade
-// briefly during a healthy rollout, and treating that as terminal would report false
-// failures on every upgrade.
+// upgradeFailureReason reports only an explicit release rejection. Generic
+// HostedCluster degradation and ClusterVersionSucceeding=False are expected to be
+// transient during a healthy rollout and are not terminal upgrade signals.
 func upgradeFailureReason(observed []metav1.Condition) (reason, message string, failed bool) {
-	now := time.Now()
-	if c := meta.FindStatusCondition(observed, "HostedClusterDegraded"); c != nil && c.Status == metav1.ConditionTrue &&
-		now.Sub(c.LastTransitionTime.Time) >= minimumSignalDuration {
-		return "HostedClusterDegraded", c.Message, true
-	}
-	if c := meta.FindStatusCondition(observed, "ClusterVersionReleaseAccepted"); c != nil && c.Status == metav1.ConditionFalse &&
-		now.Sub(c.LastTransitionTime.Time) >= minimumSignalDuration {
+	if c := meta.FindStatusCondition(observed, "ClusterVersionReleaseAccepted"); c != nil && c.Status == metav1.ConditionFalse {
 		return "ReleaseNotAccepted", c.Message, true
-	}
-	if c := meta.FindStatusCondition(observed, "ClusterVersionSucceeding"); c != nil && c.Status == metav1.ConditionFalse &&
-		now.Sub(c.LastTransitionTime.Time) >= minimumSignalDuration {
-		return "ClusterVersionNotSucceeding", c.Message, true
 	}
 	return "", "", false
 }

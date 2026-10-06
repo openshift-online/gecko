@@ -425,15 +425,13 @@ func TestReconcile_MultiplePolicies_SkipsAutomaticUpgrade(t *testing.T) {
 	require.False(t, storeClient.patchCalled)
 }
 
-func TestReconcile_ActiveUpgrade_ReportsFailure(t *testing.T) {
+func TestReconcile_ActiveUpgrade_ReportsReleaseRejection(t *testing.T) {
 	cluster := readyCluster("cluster-1", "4.15.1", nil)
 	cluster.Status.HostedClusterResult.Version = "4.15.0" // completed
 	cluster.Status.HostedClusterResult.DesiredVersion = "4.15.1"
 	cluster.Status.HostedClusterResult.ObservedConditions = []metav1.Condition{
 		{
-			Type: "HostedClusterDegraded", Status: metav1.ConditionTrue, Reason: "SomeComponentDegraded", Message: "kube-apiserver degraded",
-			// Persisted well past minimumSignalDuration — this is a real failure, not rollout noise.
-			LastTransitionTime: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
+			Type: "ClusterVersionReleaseAccepted", Status: metav1.ConditionFalse, Reason: "PayloadRejected", Message: "release payload rejected",
 		},
 	}
 	cluster.Spec.Release.Version = "4.15.1"
@@ -452,21 +450,17 @@ func TestReconcile_ActiveUpgrade_ReportsFailure(t *testing.T) {
 	require.Equal(t, "4.15.0", captured.Status.HostedClusterResult.Version, "completed version must be preserved on failure")
 
 	require.NotNil(t, captured.Status.ControlPlaneUpgrade)
-	require.Equal(t, "HostedClusterDegraded", captured.Status.ControlPlaneUpgrade.FailureReason)
+	require.Equal(t, "ReleaseNotAccepted", captured.Status.ControlPlaneUpgrade.FailureReason)
 }
 
-// TestReconcile_ActiveUpgrade_TransientDegradationIsNotFailure verifies that a
-// degraded signal observed moments ago (e.g. a control-plane pod restarting
-// mid-rollout) is reported as Progressing, not Degraded — only a signal that has
-// persisted past minimumSignalDuration is treated as a terminal failure.
-func TestReconcile_ActiveUpgrade_TransientDegradationIsNotFailure(t *testing.T) {
+func TestReconcile_ActiveUpgrade_DegradationRemainsProgressing(t *testing.T) {
 	cluster := readyCluster("cluster-1", "4.15.1", nil)
 	cluster.Status.HostedClusterResult.Version = "4.15.0" // completed
 	cluster.Status.HostedClusterResult.DesiredVersion = "4.15.1"
 	cluster.Status.HostedClusterResult.ObservedConditions = []metav1.Condition{
 		{
 			Type: "HostedClusterDegraded", Status: metav1.ConditionTrue, Reason: "SomeComponentDegraded", Message: "kube-apiserver degraded",
-			LastTransitionTime: metav1.Now(), // just transitioned
+			LastTransitionTime: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
 		},
 	}
 	cluster.Spec.Release.Version = "4.15.1"
@@ -481,7 +475,7 @@ func TestReconcile_ActiveUpgrade_TransientDegradationIsNotFailure(t *testing.T) 
 
 	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
 	require.Equal(t, metav1.ConditionTrue, meta.FindStatusCondition(captured.Status.Conditions, conditionProgressing).Status,
-		"a signal that just appeared must not be treated as terminal failure")
+		"rollout degradation must not be treated as terminal failure")
 	require.Equal(t, metav1.ConditionFalse, meta.FindStatusCondition(captured.Status.Conditions, conditionDegraded).Status)
 }
 
