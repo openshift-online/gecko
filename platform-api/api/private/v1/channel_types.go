@@ -19,7 +19,7 @@ type Channel struct {
 
 	// +orlop:public
 	// +optional
-	Status ChannelStatus `json:"status,omitempty"`
+	Status ChannelStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true

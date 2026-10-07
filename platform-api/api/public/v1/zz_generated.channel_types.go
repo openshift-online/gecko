@@ -17,7 +17,7 @@ type Channel struct {
 	Spec ChannelSpec `json:"spec"`
 
 	// +optional
-	Status ChannelStatus `json:"status,omitempty"`
+	Status ChannelStatus `json:"status,omitempty,omitzero"`
 }
 
 // +kubebuilder:object:root=true
