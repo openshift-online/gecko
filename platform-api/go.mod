@@ -20,7 +20,7 @@ require (
 replace github.com/openshift-online/gecko/orlop => ../orlop
 
 require (
-	buf.build/gen/go/open-feature/flagd/connectrpc/go v1.21.0-20260824202443-4824facda674.1 // indirect
+	buf.build/gen/go/open-feature/flagd/connectrpc/go/v2 v2.0.0-20260824202443-4824facda674.1 // indirect
 	buf.build/gen/go/open-feature/flagd/grpc/go v1.6.2-20260824202443-4824facda674.1 // indirect
 	buf.build/gen/go/open-feature/flagd/protocolbuffers/go v1.36.12-20260824202443-4824facda674.2 // indirect
 	cel.dev/expr v0.25.3 // indirect
