@@ -17,3 +17,17 @@ func TestControlPlaneUpgradePolicyPermissionsAreValid(t *testing.T) {
 		}
 	}
 }
+
+func TestControlPlaneUpgradeRequestPermissionsAreValid(t *testing.T) {
+	permissions := []string{
+		"controlplaneupgraderequest.create",
+		"controlplaneupgraderequest.list",
+		"controlplaneupgraderequest.get",
+	}
+
+	for _, permission := range permissions {
+		if !IsValidAuthorizationPermission(permission) {
+			t.Errorf("permission %q is not valid", permission)
+		}
+	}
+}
