@@ -9,31 +9,34 @@ import (
 type Action string
 
 const (
-	CreateCluster                   Action = "CreateCluster"
-	ListClusters                    Action = "ListClusters"
-	GetCluster                      Action = "GetCluster"
-	UpdateCluster                   Action = "UpdateCluster"
-	DeleteCluster                   Action = "DeleteCluster"
-	CreateNodepool                  Action = "CreateNodepool"
-	ListNodepools                   Action = "ListNodepools"
-	GetNodepool                     Action = "GetNodepool"
-	UpdateNodepool                  Action = "UpdateNodepool"
-	DeleteNodepool                  Action = "DeleteNodepool"
-	CreateRoleBinding               Action = "CreateRoleBinding"
-	ListRoleBindings                Action = "ListRoleBindings"
-	GetRoleBinding                  Action = "GetRoleBinding"
-	UpdateRoleBinding               Action = "UpdateRoleBinding"
-	DeleteRoleBinding               Action = "DeleteRoleBinding"
-	CreateRole                      Action = "CreateRole"
-	ListRoles                       Action = "ListRoles"
-	GetRole                         Action = "GetRole"
-	UpdateRole                      Action = "UpdateRole"
-	DeleteRole                      Action = "DeleteRole"
-	CreateControlPlaneUpgradePolicy Action = "CreateControlPlaneUpgradePolicy"
-	ListControlPlaneUpgradePolicies Action = "ListControlPlaneUpgradePolicies"
-	GetControlPlaneUpgradePolicy    Action = "GetControlPlaneUpgradePolicy"
-	UpdateControlPlaneUpgradePolicy Action = "UpdateControlPlaneUpgradePolicy"
-	DeleteControlPlaneUpgradePolicy Action = "DeleteControlPlaneUpgradePolicy"
+	CreateCluster                    Action = "CreateCluster"
+	ListClusters                     Action = "ListClusters"
+	GetCluster                       Action = "GetCluster"
+	UpdateCluster                    Action = "UpdateCluster"
+	DeleteCluster                    Action = "DeleteCluster"
+	CreateNodepool                   Action = "CreateNodepool"
+	ListNodepools                    Action = "ListNodepools"
+	GetNodepool                      Action = "GetNodepool"
+	UpdateNodepool                   Action = "UpdateNodepool"
+	DeleteNodepool                   Action = "DeleteNodepool"
+	CreateRoleBinding                Action = "CreateRoleBinding"
+	ListRoleBindings                 Action = "ListRoleBindings"
+	GetRoleBinding                   Action = "GetRoleBinding"
+	UpdateRoleBinding                Action = "UpdateRoleBinding"
+	DeleteRoleBinding                Action = "DeleteRoleBinding"
+	CreateRole                       Action = "CreateRole"
+	ListRoles                        Action = "ListRoles"
+	GetRole                          Action = "GetRole"
+	UpdateRole                       Action = "UpdateRole"
+	DeleteRole                       Action = "DeleteRole"
+	CreateControlPlaneUpgradePolicy  Action = "CreateControlPlaneUpgradePolicy"
+	ListControlPlaneUpgradePolicies  Action = "ListControlPlaneUpgradePolicies"
+	GetControlPlaneUpgradePolicy     Action = "GetControlPlaneUpgradePolicy"
+	UpdateControlPlaneUpgradePolicy  Action = "UpdateControlPlaneUpgradePolicy"
+	DeleteControlPlaneUpgradePolicy  Action = "DeleteControlPlaneUpgradePolicy"
+	CreateControlPlaneUpgradeRequest Action = "CreateControlPlaneUpgradeRequest"
+	ListControlPlaneUpgradeRequests  Action = "ListControlPlaneUpgradeRequests"
+	GetControlPlaneUpgradeRequest    Action = "GetControlPlaneUpgradeRequest"
 )
 
 var permissionActions = map[string]Action{
@@ -58,11 +61,14 @@ var permissionActions = map[string]Action{
 	"role.update":        UpdateRole,
 	"role.delete":        DeleteRole,
 
-	"controlplaneupgradepolicy.create": CreateControlPlaneUpgradePolicy,
-	"controlplaneupgradepolicy.list":   ListControlPlaneUpgradePolicies,
-	"controlplaneupgradepolicy.get":    GetControlPlaneUpgradePolicy,
-	"controlplaneupgradepolicy.update": UpdateControlPlaneUpgradePolicy,
-	"controlplaneupgradepolicy.delete": DeleteControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.create":  CreateControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.list":    ListControlPlaneUpgradePolicies,
+	"controlplaneupgradepolicy.get":     GetControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.update":  UpdateControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.delete":  DeleteControlPlaneUpgradePolicy,
+	"controlplaneupgraderequest.create": CreateControlPlaneUpgradeRequest,
+	"controlplaneupgraderequest.list":   ListControlPlaneUpgradeRequests,
+	"controlplaneupgraderequest.get":    GetControlPlaneUpgradeRequest,
 }
 
 func actionForPermission(permission string) (Action, bool) {
@@ -113,6 +119,8 @@ func pluralToResource(plural string) string {
 		return "nodepool"
 	case "controlplaneupgradepolicies":
 		return "controlplaneupgradepolicy"
+	case "controlplaneupgraderequests":
+		return "controlplaneupgraderequest"
 	case "roles":
 		return "role"
 	case "rolebindings":
