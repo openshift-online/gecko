@@ -32,11 +32,14 @@ const (
 )
 
 const (
-	CreateControlPlaneUpgradePolicy Action = "CreateControlPlaneUpgradePolicy"
-	ListControlPlaneUpgradePolicies Action = "ListControlPlaneUpgradePolicies"
-	GetControlPlaneUpgradePolicy    Action = "GetControlPlaneUpgradePolicy"
-	UpdateControlPlaneUpgradePolicy Action = "UpdateControlPlaneUpgradePolicy"
-	DeleteControlPlaneUpgradePolicy Action = "DeleteControlPlaneUpgradePolicy"
+	CreateControlPlaneUpgradePolicy  Action = "CreateControlPlaneUpgradePolicy"
+	ListControlPlaneUpgradePolicies  Action = "ListControlPlaneUpgradePolicies"
+	GetControlPlaneUpgradePolicy     Action = "GetControlPlaneUpgradePolicy"
+	UpdateControlPlaneUpgradePolicy  Action = "UpdateControlPlaneUpgradePolicy"
+	DeleteControlPlaneUpgradePolicy  Action = "DeleteControlPlaneUpgradePolicy"
+	CreateControlPlaneUpgradeRequest Action = "CreateControlPlaneUpgradeRequest"
+	ListControlPlaneUpgradeRequests  Action = "ListControlPlaneUpgradeRequests"
+	GetControlPlaneUpgradeRequest    Action = "GetControlPlaneUpgradeRequest"
 )
 
 var permissionActions = map[string]Action{
@@ -61,11 +64,14 @@ var permissionActions = map[string]Action{
 	"role.update":        UpdateRole,
 	"role.delete":        DeleteRole,
 
-	"controlplaneupgradepolicy.create": CreateControlPlaneUpgradePolicy,
-	"controlplaneupgradepolicy.list":   ListControlPlaneUpgradePolicies,
-	"controlplaneupgradepolicy.get":    GetControlPlaneUpgradePolicy,
-	"controlplaneupgradepolicy.update": UpdateControlPlaneUpgradePolicy,
-	"controlplaneupgradepolicy.delete": DeleteControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.create":  CreateControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.list":    ListControlPlaneUpgradePolicies,
+	"controlplaneupgradepolicy.get":     GetControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.update":  UpdateControlPlaneUpgradePolicy,
+	"controlplaneupgradepolicy.delete":  DeleteControlPlaneUpgradePolicy,
+	"controlplaneupgraderequest.create": CreateControlPlaneUpgradeRequest,
+	"controlplaneupgraderequest.list":   ListControlPlaneUpgradeRequests,
+	"controlplaneupgraderequest.get":    GetControlPlaneUpgradeRequest,
 }
 
 func actionForPermission(permission string) (Action, bool) {
@@ -116,6 +122,8 @@ func pluralToResource(plural string) string {
 		return "nodepool"
 	case "controlplaneupgradepolicies":
 		return "controlplaneupgradepolicy"
+	case "controlplaneupgraderequests":
+		return "controlplaneupgraderequest"
 	case "roles":
 		return "role"
 	case "rolebindings":

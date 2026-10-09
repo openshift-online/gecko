@@ -24,4 +24,7 @@ spec:
     - controlplaneupgradepolicy.get
     - controlplaneupgradepolicy.update
     - controlplaneupgradepolicy.delete
+    - controlplaneupgraderequest.create
+    - controlplaneupgraderequest.list
+    - controlplaneupgraderequest.get
 {{- end }}

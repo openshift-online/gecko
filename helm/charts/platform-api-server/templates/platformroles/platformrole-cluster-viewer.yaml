@@ -13,4 +13,6 @@ spec:
     - cluster.get
     - nodepool.list
     - nodepool.get
+    - controlplaneupgraderequest.list
+    - controlplaneupgraderequest.get
 {{- end }}

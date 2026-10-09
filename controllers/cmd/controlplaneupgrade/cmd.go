@@ -19,7 +19,7 @@ import (
 // NewCommand returns the control-plane-upgrade subcommand.
 //
 // This controller watches Cluster directly, Channel (for fleetMinorVersion
-// authorization), and ControlPlaneUpgradePolicy (for maintenance windows/exclusions).
+// authorization), ControlPlaneUpgradePolicy, and one-time upgrade requests.
 func NewCommand(rf *setup.RootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "control-plane-upgrade",
@@ -43,6 +43,10 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				controlplaneupgrade.PolicyClusterIDField, policyClusterID); err != nil {
 				return fmt.Errorf("index upgrade policies by cluster ID: %w", err)
 			}
+			if err := mgr.GetFieldIndexer().IndexField(ctx, &privatev1.ControlPlaneUpgradeRequest{},
+				controlplaneupgrade.RequestClusterIDField, requestClusterID); err != nil {
+				return fmt.Errorf("index upgrade requests by cluster ID: %w", err)
+			}
 
 			rec := controlplaneupgrade.NewReconciler(mgr.GetClient(), log)
 
@@ -50,6 +54,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				For(&privatev1.Cluster{}).
 				Watches(&privatev1.Channel{}, handler.EnqueueRequestsFromMapFunc(channelToClusters(mgr.GetClient()))).
 				Watches(&privatev1.ControlPlaneUpgradePolicy{}, handler.EnqueueRequestsFromMapFunc(policyToCluster)).
+				Watches(&privatev1.ControlPlaneUpgradeRequest{}, handler.EnqueueRequestsFromMapFunc(requestToCluster)).
 				WithOptions(rf.ControllerOpts()).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -69,6 +74,22 @@ func policyClusterID(obj client.Object) []string {
 		return nil
 	}
 	return []string{policy.Spec.ClusterID}
+}
+
+func requestClusterID(obj client.Object) []string {
+	request, ok := obj.(*privatev1.ControlPlaneUpgradeRequest)
+	if !ok || request.Spec.ClusterID == "" {
+		return nil
+	}
+	return []string{request.Spec.ClusterID}
+}
+
+func requestToCluster(_ context.Context, obj client.Object) []reconcile.Request {
+	request, ok := obj.(*privatev1.ControlPlaneUpgradeRequest)
+	if !ok || request.Spec.ClusterID == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: request.Namespace, Name: request.Spec.ClusterID}}}
 }
 
 // policyToCluster maps a ControlPlaneUpgradePolicy change to its owning Cluster

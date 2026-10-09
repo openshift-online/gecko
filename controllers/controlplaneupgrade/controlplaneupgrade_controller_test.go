@@ -40,13 +40,21 @@ func testLogger(t *testing.T) logger.Logger {
 
 // mockStatusWriter captures Status().Update calls.
 type mockStatusWriter struct {
-	called   bool
-	captured client.Object
+	called          bool
+	captured        client.Object
+	capturedRequest *privatev1.ControlPlaneUpgradeRequest
+	capturedCluster *privatev1.Cluster
 }
 
 func (m *mockStatusWriter) Update(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
 	m.called = true
 	m.captured = obj
+	if request, ok := obj.(*privatev1.ControlPlaneUpgradeRequest); ok {
+		m.capturedRequest = request.DeepCopy()
+	}
+	if cluster, ok := obj.(*privatev1.Cluster); ok {
+		m.capturedCluster = cluster.DeepCopy()
+	}
 	return nil
 }
 func (m *mockStatusWriter) Create(_ context.Context, _ client.Object, _ client.Object, _ ...client.SubResourceCreateOption) error {
@@ -66,6 +74,7 @@ type mockStoreClient struct {
 	cluster      *privatev1.Cluster
 	channel      *privatev1.Channel
 	policies     []privatev1.ControlPlaneUpgradePolicy
+	requests     []privatev1.ControlPlaneUpgradeRequest
 	statusWriter *mockStatusWriter
 	patchCalled  bool
 	patched      client.Object
@@ -104,11 +113,14 @@ func (m *mockStoreClient) Patch(_ context.Context, obj client.Object, _ client.P
 }
 
 func (m *mockStoreClient) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
-	policies, ok := list.(*privatev1.ControlPlaneUpgradePolicyList)
-	if !ok {
+	switch typed := list.(type) {
+	case *privatev1.ControlPlaneUpgradePolicyList:
+		typed.Items = append([]privatev1.ControlPlaneUpgradePolicy(nil), m.policies...)
+	case *privatev1.ControlPlaneUpgradeRequestList:
+		typed.Items = append([]privatev1.ControlPlaneUpgradeRequest(nil), m.requests...)
+	default:
 		return fmt.Errorf("unexpected list type %T", list)
 	}
-	policies.Items = append([]privatev1.ControlPlaneUpgradePolicy(nil), m.policies...)
 	return nil
 }
 func (m *mockStoreClient) Create(_ context.Context, _ client.Object, _ ...client.CreateOption) error {
@@ -511,4 +523,92 @@ func TestReconcile_RecordsCompletion(t *testing.T) {
 
 	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
 	require.NotNil(t, captured.Status.ControlPlaneUpgrade.CompletedAt)
+}
+
+func TestReconcile_ManualRequestBypassesMaintenancePolicy(t *testing.T) {
+	cluster := readyCluster("cluster-1", "4.15.0", []string{"4.15.1"})
+	r, storeClient := buildReconciler(t, cluster)
+	storeClient.policies = nil
+	storeClient.requests = []privatev1.ControlPlaneUpgradeRequest{{
+		ObjectMeta: metav1.ObjectMeta{Name: "request-1", Namespace: "hyperfleet"},
+		Spec:       privatev1.ControlPlaneUpgradeRequestSpec{ClusterID: "cluster-1", TargetVersion: "4.15.1"},
+	}}
+
+	result, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
+
+	require.NoError(t, err)
+	require.Equal(t, requeueObserving, result.RequeueAfter)
+	require.True(t, storeClient.patchCalled)
+	require.Equal(t, "4.15.1", storeClient.patched.(*privatev1.Cluster).Spec.Release.Version)
+	require.Equal(t, targetSourceCustomer, storeClient.statusWriter.capturedCluster.Status.ControlPlaneUpgrade.TargetSource)
+	require.Equal(t, "Accepted", storeClient.statusWriter.capturedRequest.Status.Decision)
+}
+
+func TestReconcile_ManualRequestNoLongerAvailable(t *testing.T) {
+	cluster := readyCluster("cluster-1", "4.15.0", []string{"4.15.2"})
+	r, storeClient := buildReconciler(t, cluster)
+	storeClient.requests = []privatev1.ControlPlaneUpgradeRequest{{
+		ObjectMeta: metav1.ObjectMeta{Name: "request-1", Namespace: "hyperfleet"},
+		Spec:       privatev1.ControlPlaneUpgradeRequestSpec{ClusterID: "cluster-1", TargetVersion: "4.15.1"},
+	}}
+
+	_, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
+
+	require.NoError(t, err)
+	require.False(t, storeClient.patchCalled)
+	require.Equal(t, "Rejected", storeClient.statusWriter.capturedRequest.Status.Decision)
+	require.Equal(t, "TargetNotAvailable", storeClient.statusWriter.capturedRequest.Status.Reason)
+}
+
+func TestReconcile_ManualRequestDuringAutomaticUpgrade(t *testing.T) {
+	cluster := readyCluster("cluster-1", "4.15.0", []string{"4.15.2"})
+	cluster.Spec.Release.Version = "4.15.1"
+	cluster.Status.ControlPlaneUpgrade = &privatev1.ControlPlaneUpgradeResult{TargetVersion: "4.15.1", TargetSource: targetSourceAutomatic}
+	r, storeClient := buildReconciler(t, cluster)
+	storeClient.requests = []privatev1.ControlPlaneUpgradeRequest{{
+		ObjectMeta: metav1.ObjectMeta{Name: "request-1", Namespace: "hyperfleet"},
+		Spec:       privatev1.ControlPlaneUpgradeRequestSpec{ClusterID: "cluster-1", TargetVersion: "4.15.2"},
+	}}
+
+	_, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
+
+	require.NoError(t, err)
+	require.False(t, storeClient.patchCalled)
+	require.Equal(t, "Rejected", storeClient.statusWriter.capturedRequest.Status.Decision)
+	require.Equal(t, "UpgradeInProgress", storeClient.statusWriter.capturedRequest.Status.Reason)
+}
+
+func TestReconcile_ManualRequestWaitsForHostedClusterHealth(t *testing.T) {
+	cluster := readyCluster("cluster-1", "4.15.0", []string{"4.15.1"})
+	cluster.Status.HostedClusterResult.ObservedConditions = nil
+	r, storeClient := buildReconciler(t, cluster)
+	storeClient.requests = []privatev1.ControlPlaneUpgradeRequest{{
+		ObjectMeta: metav1.ObjectMeta{Name: "request-1", Namespace: "hyperfleet"},
+		Spec:       privatev1.ControlPlaneUpgradeRequestSpec{ClusterID: "cluster-1", TargetVersion: "4.15.1"},
+	}}
+
+	result, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
+
+	require.NoError(t, err)
+	require.Equal(t, requeuePending, result.RequeueAfter)
+	require.False(t, storeClient.patchCalled)
+	require.Nil(t, storeClient.statusWriter.capturedRequest)
+	require.Equal(t, "HostedClusterDegraded", meta.FindStatusCondition(storeClient.statusWriter.capturedCluster.Status.Conditions, conditionProgressing).Reason)
+}
+
+func TestReconcile_ManualRequestAfterPatchRetainsCustomerSource(t *testing.T) {
+	cluster := readyCluster("cluster-1", "4.15.0", []string{"4.15.1"})
+	cluster.Spec.Release.Version = "4.15.1"
+	r, storeClient := buildReconciler(t, cluster)
+	storeClient.requests = []privatev1.ControlPlaneUpgradeRequest{{
+		ObjectMeta: metav1.ObjectMeta{Name: "request-1", Namespace: "hyperfleet"},
+		Spec:       privatev1.ControlPlaneUpgradeRequestSpec{ClusterID: "cluster-1", TargetVersion: "4.15.1"},
+	}}
+
+	_, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
+
+	require.NoError(t, err)
+	require.False(t, storeClient.patchCalled)
+	require.Equal(t, "Accepted", storeClient.statusWriter.capturedRequest.Status.Decision)
+	require.Equal(t, targetSourceCustomer, storeClient.statusWriter.capturedCluster.Status.ControlPlaneUpgrade.TargetSource)
 }
