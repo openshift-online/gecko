@@ -19,18 +19,18 @@ import (
 )
 
 type Generator struct {
-	inputDir                     string
-	outputDir                    string
-	fset                         *token.FileSet
-	publicTypes                  map[string]bool
-	referencedTypes              map[string]bool
-	modulePath                   string
-	typesImportPath              string
-	inputBasePath                string
-	outputBasePath               string
-	publicPackages               map[string]bool     // tracks which packages have +orlop:public marker
-	typeVerbs                    map[string][]string // tracks +orlop:public-verbs per type name
-	typeAuthorizationExemptVerbs map[string][]string // tracks +orlop:authorization-exempt-verbs per type name
+	inputDir                    string
+	outputDir                   string
+	fset                        *token.FileSet
+	publicTypes                 map[string]bool
+	referencedTypes             map[string]bool
+	modulePath                  string
+	typesImportPath             string
+	inputBasePath               string
+	outputBasePath              string
+	publicPackages              map[string]bool              // tracks which packages have +orlop:public marker
+	typeVerbs                   map[string][]string          // tracks +orlop:public-verbs per type name
+	typeAuthorizationPolicyRefs map[string]map[string]string // tracks +orlop:authorization-policy per type name
 }
 
 func NewGenerator(inputDir, outputDir string) (*Generator, error) {
@@ -40,18 +40,18 @@ func NewGenerator(inputDir, outputDir string) (*Generator, error) {
 	}
 
 	return &Generator{
-		inputDir:                     inputDir,
-		outputDir:                    outputDir,
-		fset:                         token.NewFileSet(),
-		publicTypes:                  make(map[string]bool),
-		referencedTypes:              make(map[string]bool),
-		modulePath:                   modulePath,
-		typesImportPath:              "github.com/openshift-online/gecko/orlop/pkg/apiserver/types",
-		inputBasePath:                modulePath + "/" + inputDir,
-		outputBasePath:               modulePath + "/" + outputDir,
-		publicPackages:               make(map[string]bool),
-		typeVerbs:                    make(map[string][]string),
-		typeAuthorizationExemptVerbs: make(map[string][]string),
+		inputDir:                    inputDir,
+		outputDir:                   outputDir,
+		fset:                        token.NewFileSet(),
+		publicTypes:                 make(map[string]bool),
+		referencedTypes:             make(map[string]bool),
+		modulePath:                  modulePath,
+		typesImportPath:             "github.com/openshift-online/gecko/orlop/pkg/apiserver/types",
+		inputBasePath:               modulePath + "/" + inputDir,
+		outputBasePath:              modulePath + "/" + outputDir,
+		publicPackages:              make(map[string]bool),
+		typeVerbs:                   make(map[string][]string),
+		typeAuthorizationPolicyRefs: make(map[string]map[string]string),
 	}, nil
 }
 
@@ -372,12 +372,6 @@ var validVerbs = map[string]bool{
 	"watch":  true,
 }
 
-var validAuthorizationExemptVerbs = map[string]bool{
-	"get":   true,
-	"list":  true,
-	"watch": true,
-}
-
 // parseVerbList parses a comma-separated verb list from an annotation value. It returns the deduplicated, validated verb
 // list or an error for unknown tokens.
 func parseVerbList(raw string) ([]string, error) {
@@ -400,6 +394,36 @@ func parseVerbList(raw string) ([]string, error) {
 	return verbs, nil
 }
 
+func parseAuthorizationPolicyRefs(raw string) (map[string]string, error) {
+	refs := make(map[string]string)
+	for _, token := range strings.Split(raw, ",") {
+		entry := strings.TrimSpace(token)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid authorization policy entry %q (expected verb=policy)", entry)
+		}
+		verb := strings.TrimSpace(parts[0])
+		policyRef := strings.TrimSpace(parts[1])
+		if !validVerbs[verb] {
+			return nil, fmt.Errorf("unknown authorization policy verb %q (valid: create, get, list, update, patch, delete, watch)", verb)
+		}
+		if policyRef == "" {
+			return nil, fmt.Errorf("authorization policy for verb %q is empty", verb)
+		}
+		if _, found := refs[verb]; found {
+			return nil, fmt.Errorf("duplicate authorization policy for verb %q", verb)
+		}
+		refs[verb] = policyRef
+	}
+	if len(refs) == 0 {
+		return nil, fmt.Errorf("authorization policy annotation must contain at least one verb=policy entry")
+	}
+	return refs, nil
+}
+
 // extractPublicVerbsFromComments scans a comment list for a +orlop:public-verbs:
 // annotation and returns the parsed verb list. Returns nil when absent.
 func extractPublicVerbsFromComments(comments []*ast.Comment) ([]string, error) {
@@ -415,12 +439,12 @@ func extractPublicVerbsFromComments(comments []*ast.Comment) ([]string, error) {
 	return nil, nil
 }
 
-func extractAuthorizationExemptVerbsFromComments(comments []*ast.Comment) ([]string, error) {
-	const prefix = "+orlop:authorization-exempt-verbs:"
+func extractAuthorizationPolicyRefsFromComments(comments []*ast.Comment) (map[string]string, error) {
+	const prefix = "+orlop:authorization-policy:"
 	for _, comment := range comments {
 		text := strings.TrimSpace(strings.TrimPrefix(comment.Text, "//"))
 		if strings.HasPrefix(text, prefix) {
-			return parseVerbList(strings.TrimPrefix(text, prefix))
+			return parseAuthorizationPolicyRefs(strings.TrimPrefix(text, prefix))
 		}
 	}
 	return nil, nil
@@ -432,12 +456,12 @@ func extractAuthorizationExemptVerbsFromComments(comments []*ast.Comment) ([]str
 // package doc comment.
 func (g *Generator) scanTypeVerbs(file *ast.File, path string) error {
 	const publicMarker = "+orlop:public-verbs"
-	const authorizationExemptMarker = "+orlop:authorization-exempt-verbs"
+	const authorizationPolicyMarker = "+orlop:authorization-policy"
 
 	// Validate: annotation must not appear on the package doc comment.
 	if file.Doc != nil {
 		for _, comment := range file.Doc.List {
-			if strings.Contains(comment.Text, publicMarker) || strings.Contains(comment.Text, authorizationExemptMarker) {
+			if strings.Contains(comment.Text, publicMarker) || strings.Contains(comment.Text, authorizationPolicyMarker) {
 				return fmt.Errorf("%s: Orlop verb annotations must be placed on a type declaration, not the package doc comment", path)
 			}
 		}
@@ -466,7 +490,7 @@ func (g *Generator) scanTypeVerbs(file *ast.File, path string) error {
 					continue
 				}
 				for _, comment := range field.Doc.List {
-					if strings.Contains(comment.Text, publicMarker) || strings.Contains(comment.Text, authorizationExemptMarker) {
+					if strings.Contains(comment.Text, publicMarker) || strings.Contains(comment.Text, authorizationPolicyMarker) {
 						return fmt.Errorf("%s: Orlop verb annotations must be placed on a type declaration, not on a struct field", path)
 					}
 				}
@@ -481,33 +505,45 @@ func (g *Generator) scanTypeVerbs(file *ast.File, path string) error {
 				docComments = genDecl.Doc.List
 			}
 
-			verbs, err := extractPublicVerbsFromComments(docComments)
-			if err != nil {
-				return fmt.Errorf("%s: type %s: %w", path, typeSpec.Name.Name, err)
-			}
-			if verbs != nil {
-				g.typeVerbs[typeSpec.Name.Name] = verbs
-			}
-			authorizationExemptVerbs, err := extractAuthorizationExemptVerbsFromComments(docComments)
-			if err != nil {
-				return fmt.Errorf("%s: type %s: %w", path, typeSpec.Name.Name, err)
-			}
-			if authorizationExemptVerbs != nil {
-				if verbs == nil {
-					return fmt.Errorf("%s: type %s: +orlop:authorization-exempt-verbs requires +orlop:public-verbs", path, typeSpec.Name.Name)
-				}
-				for _, verb := range authorizationExemptVerbs {
-					if !validAuthorizationExemptVerbs[verb] {
-						return fmt.Errorf("%s: type %s: authorization-exempt verb %q is mutating (valid: get, list, watch)", path, typeSpec.Name.Name, verb)
-					}
-					if !containsVerb(verbs, verb) {
-						return fmt.Errorf("%s: type %s: authorization-exempt verb %q is not declared in +orlop:public-verbs", path, typeSpec.Name.Name, verb)
-					}
-				}
-				g.typeAuthorizationExemptVerbs[typeSpec.Name.Name] = authorizationExemptVerbs
+			if err := g.scanTypeVerbAnnotations(path, typeSpec.Name.Name, docComments); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
+}
+
+func (g *Generator) scanTypeVerbAnnotations(path, typeName string, docComments []*ast.Comment) error {
+	verbs, err := extractPublicVerbsFromComments(docComments)
+	if err != nil {
+		return fmt.Errorf("%s: type %s: %w", path, typeName, err)
+	}
+	if verbs != nil {
+		g.typeVerbs[typeName] = verbs
+	}
+	return g.scanAuthorizationPolicyRefs(path, typeName, verbs, docComments)
+}
+
+func (g *Generator) scanAuthorizationPolicyRefs(path, typeName string, verbs []string, docComments []*ast.Comment) error {
+	authorizationPolicyRefs, err := extractAuthorizationPolicyRefsFromComments(docComments)
+	if err != nil {
+		return fmt.Errorf("%s: type %s: %w", path, typeName, err)
+	}
+	if authorizationPolicyRefs == nil {
+		return nil
+	}
+	if verbs == nil {
+		return fmt.Errorf("%s: type %s: +orlop:authorization-policy requires +orlop:public-verbs", path, typeName)
+	}
+	for verb := range authorizationPolicyRefs {
+		if !containsVerb(verbs, verb) {
+			return fmt.Errorf("%s: type %s: authorization policy verb %q is not declared in +orlop:public-verbs", path, typeName, verb)
+		}
+	}
+	if g.typeAuthorizationPolicyRefs == nil {
+		g.typeAuthorizationPolicyRefs = make(map[string]map[string]string)
+	}
+	g.typeAuthorizationPolicyRefs[typeName] = authorizationPolicyRefs
 	return nil
 }
 

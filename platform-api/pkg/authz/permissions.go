@@ -34,7 +34,18 @@ const (
 	GetControlPlaneUpgradePolicy    Action = "GetControlPlaneUpgradePolicy"
 	UpdateControlPlaneUpgradePolicy Action = "UpdateControlPlaneUpgradePolicy"
 	DeleteControlPlaneUpgradePolicy Action = "DeleteControlPlaneUpgradePolicy"
+	ListVersions                    Action = "ListVersions"
+	GetVersion                      Action = "GetVersion"
+	ListChannels                    Action = "ListChannels"
+	GetChannel                      Action = "GetChannel"
 )
+
+var platformActions = map[string]Action{
+	"version.list": ListVersions,
+	"version.get":  GetVersion,
+	"channel.list": ListChannels,
+	"channel.get":  GetChannel,
+}
 
 var permissionActions = map[string]Action{
 	"cluster.create":     CreateCluster,
@@ -71,6 +82,23 @@ func actionForPermission(permission string) (Action, bool) {
 }
 
 func actionForRequest(method, plural string, named bool) (Action, error) {
+	verb, err := verbForRequest(method, plural, named)
+	if err != nil {
+		return "", err
+	}
+
+	permission := pluralToResource(plural) + "." + verb
+	if action, ok := platformActions[permission]; ok {
+		return action, nil
+	}
+	action, ok := actionForPermission(permission)
+	if !ok {
+		return "", fmt.Errorf("unsupported public resource %q", plural)
+	}
+	return action, nil
+}
+
+func verbForRequest(method, plural string, named bool) (string, error) {
 	var verb string
 	switch method {
 	case http.MethodGet:
@@ -97,12 +125,7 @@ func actionForRequest(method, plural string, named bool) (Action, error) {
 	default:
 		return "", fmt.Errorf("unsupported HTTP method %q", method)
 	}
-
-	action, ok := actionForPermission(pluralToResource(plural) + "." + verb)
-	if !ok {
-		return "", fmt.Errorf("unsupported public resource %q", plural)
-	}
-	return action, nil
+	return verb, nil
 }
 
 func pluralToResource(plural string) string {
@@ -113,6 +136,10 @@ func pluralToResource(plural string) string {
 		return "nodepool"
 	case "controlplaneupgradepolicies":
 		return "controlplaneupgradepolicy"
+	case "versions":
+		return "version"
+	case "channels":
+		return "channel"
 	case "roles":
 		return "role"
 	case "rolebindings":

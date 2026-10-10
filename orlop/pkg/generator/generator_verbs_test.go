@@ -14,14 +14,30 @@ func parseTestFile(t *testing.T, src string) (*Generator, string) {
 		t.Fatalf("parse error: %v", err)
 	}
 	g := &Generator{
-		typeVerbs:                    make(map[string][]string),
-		typeAuthorizationExemptVerbs: make(map[string][]string),
+		typeVerbs:                   make(map[string][]string),
+		typeAuthorizationPolicyRefs: make(map[string]map[string]string),
 	}
 	if err := g.scanTypeVerbs(f, "types.go"); err != nil {
 		t.Fatalf("unexpected scanTypeVerbs error: %v", err)
 	}
 	_ = f
 	return g, "types.go"
+}
+
+func assertScanTypeVerbsError(t *testing.T, src string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "types.go", src, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	g := &Generator{
+		typeVerbs:                   make(map[string][]string),
+		typeAuthorizationPolicyRefs: make(map[string]map[string]string),
+	}
+	if err := g.scanTypeVerbs(f, "types.go"); err == nil {
+		t.Fatal("expected scanTypeVerbs error")
+	}
 }
 
 func TestScanTypeVerbs_Absent(t *testing.T) {
@@ -54,72 +70,48 @@ type Widget struct {}
 	}
 }
 
-func TestScanTypeVerbs_AuthorizationExemptVerbs(t *testing.T) {
+func TestScanTypeVerbs_AuthorizationPolicyRefs(t *testing.T) {
 	src := `package v1
-// +orlop:public-verbs: get,list,watch
-// +orlop:authorization-exempt-verbs: get,list
+// +orlop:public-verbs: get,list
+// +orlop:authorization-policy: get=version-read,list=version-list
 type Widget struct {}
 `
 	g, _ := parseTestFile(t, src)
-	want := []string{"get", "list"}
-	got := g.typeAuthorizationExemptVerbs["Widget"]
-	if len(got) != len(want) {
-		t.Fatalf("got %v, want %v", got, want)
+	refs := g.typeAuthorizationPolicyRefs["Widget"]
+	if refs["get"] != "version-read" || refs["list"] != "version-list" {
+		t.Fatalf("authorization policy refs = %#v, want get=version-read,list=version-list", refs)
 	}
-	for i, verb := range want {
-		if got[i] != verb {
-			t.Errorf("verbs[%d] = %q, want %q", i, got[i], verb)
+}
+
+func TestScanTypeVerbs_AuthorizationPolicyRefsRequirePublicVerbs(t *testing.T) {
+	src := `package v1
+// +orlop:authorization-policy: get=version-read
+type Widget struct {}
+`
+	assertScanTypeVerbsError(t, src)
+}
+
+func TestScanTypeVerbs_AuthorizationPolicyRefsMustBePublic(t *testing.T) {
+	src := `package v1
+// +orlop:public-verbs: get
+// +orlop:authorization-policy: list=version-list
+type Widget struct {}
+`
+	assertScanTypeVerbsError(t, src)
+}
+
+func TestParseAuthorizationPolicyRefs(t *testing.T) {
+	refs, err := parseAuthorizationPolicyRefs("get=version-read,list=version-list")
+	if err != nil {
+		t.Fatalf("parseAuthorizationPolicyRefs: %v", err)
+	}
+	if refs["get"] != "version-read" || refs["list"] != "version-list" {
+		t.Fatalf("refs = %#v", refs)
+	}
+	for _, raw := range []string{"get", "unknown=policy", "get="} {
+		if _, err := parseAuthorizationPolicyRefs(raw); err == nil {
+			t.Errorf("parseAuthorizationPolicyRefs(%q) returned nil error", raw)
 		}
-	}
-}
-
-func TestScanTypeVerbs_AuthorizationExemptVerbsRequirePublicVerbs(t *testing.T) {
-	src := `package v1
-// +orlop:authorization-exempt-verbs: get,list
-type Widget struct {}
-`
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "types.go", src, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-	g := &Generator{typeVerbs: make(map[string][]string), typeAuthorizationExemptVerbs: make(map[string][]string)}
-	if err := g.scanTypeVerbs(f, "types.go"); err == nil {
-		t.Fatal("expected error when authorization-exempt verbs have no public verbs")
-	}
-}
-
-func TestScanTypeVerbs_AuthorizationExemptVerbsMustBePublic(t *testing.T) {
-	src := `package v1
-// +orlop:public-verbs: get,list
-// +orlop:authorization-exempt-verbs: get,watch
-type Widget struct {}
-`
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "types.go", src, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-	g := &Generator{typeVerbs: make(map[string][]string), typeAuthorizationExemptVerbs: make(map[string][]string)}
-	if err := g.scanTypeVerbs(f, "types.go"); err == nil {
-		t.Fatal("expected error when authorization-exempt verb is not public")
-	}
-}
-
-func TestScanTypeVerbs_AuthorizationExemptVerbsCannotMutate(t *testing.T) {
-	src := `package v1
-// +orlop:public-verbs: create,get,list
-// +orlop:authorization-exempt-verbs: create,get,list
-type Widget struct {}
-`
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "types.go", src, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("parse error: %v", err)
-	}
-	g := &Generator{typeVerbs: make(map[string][]string), typeAuthorizationExemptVerbs: make(map[string][]string)}
-	if err := g.scanTypeVerbs(f, "types.go"); err == nil {
-		t.Fatal("expected error for mutating authorization-exempt verb")
 	}
 }
 

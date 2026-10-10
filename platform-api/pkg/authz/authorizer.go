@@ -15,9 +15,14 @@ import (
 type Authorizer struct {
 	stores   Stores
 	reloadMu sync.Mutex
-	policies atomic.Pointer[cedar.PolicySet]
+	policies atomic.Pointer[authorizationPolicySets]
 	cache    *EntityCache
 	logger   logr.Logger
+}
+
+type authorizationPolicySets struct {
+	namespace *cedar.PolicySet
+	platform  map[string]*cedar.PolicySet
 }
 
 // NewAuthorizer performs the initial policy build synchronously. An empty
@@ -43,11 +48,18 @@ func (a *Authorizer) Reload(ctx context.Context) error {
 	a.reloadMu.Lock()
 	defer a.reloadMu.Unlock()
 
-	policies, err := generatePolicySet(ctx, a.stores, a.logger)
+	namespacePolicies, err := generatePolicySet(ctx, a.stores, a.logger)
 	if err != nil {
 		return err
 	}
-	a.policies.Store(policies)
+	platformPolicies, err := loadPlatformPolicySets()
+	if err != nil {
+		return err
+	}
+	a.policies.Store(&authorizationPolicySets{
+		namespace: namespacePolicies,
+		platform:  platformPolicies,
+	})
 	a.cache.InvalidateAll()
 	return nil
 }
@@ -64,11 +76,11 @@ func (a *Authorizer) Authorize(ctx context.Context, email string, action Action,
 	if err != nil {
 		return false, err
 	}
-	policies := a.policies.Load()
-	if policies == nil {
+	policySets := a.policies.Load()
+	if policySets == nil || policySets.namespace == nil {
 		return false, nil
 	}
-	decision, _ := cedar.Authorize(policies, entities, cedar.Request{
+	decision, _ := cedar.Authorize(policySets.namespace, entities, cedar.Request{
 		Principal: cedar.NewEntityUID("User", cedar.String(email)),
 		Action:    cedar.NewEntityUID("Action", cedar.String(action)),
 		Resource:  cedar.NewEntityUID("Namespace", cedar.String(namespace)),

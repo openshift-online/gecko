@@ -10,7 +10,9 @@ import (
 
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/memory"
+	"github.com/openshift-online/gecko/orlop/pkg/apiserver/types"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
+	publicv1 "github.com/openshift-online/gecko/platform-api/api/public/v1"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -70,6 +72,86 @@ func TestAuthorizerDefaultDenyAndNamespaceIsolation(t *testing.T) {
 	if err != nil || allowed {
 		t.Fatalf("GetCluster for unbound user = allowed %v, err %v", allowed, err)
 	}
+}
+
+func TestAuthorizerPlatformCatalogPolicy(t *testing.T) {
+	authorizer := newEmptyAuthorizer(t)
+	tests := []struct {
+		name     string
+		resource types.ResourceInfo
+		verb     string
+		action   Action
+		want     bool
+		wantErr  bool
+	}{
+		{name: "get version", resource: publicv1.VersionResourceInfo, verb: "get", action: GetVersion, want: true},
+		{name: "list versions", resource: publicv1.VersionResourceInfo, verb: "list", action: ListVersions, want: true},
+		{name: "get channel", resource: publicv1.ChannelResourceInfo, verb: "get", action: GetChannel, want: true},
+		{name: "list channels", resource: publicv1.ChannelResourceInfo, verb: "list", action: ListChannels, want: true},
+		{
+			name:     "resource without policy ref is denied",
+			resource: types.ResourceInfo{GVK: publicv1.GroupVersion.WithKind("PlatformRole"), Plural: "platformroles"},
+			verb:     "get",
+			action:   GetVersion,
+		},
+		{
+			name:     "shared policy rejects mismatched action and resource",
+			resource: publicv1.VersionResourceInfo,
+			verb:     "get",
+			action:   GetChannel,
+		},
+		{
+			name:     "unknown policy ref fails closed",
+			resource: resourceWithPolicyRef(publicv1.VersionResourceInfo, "get", "missing-policy"),
+			verb:     "get",
+			action:   GetVersion,
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			allowed, err := authorizer.AuthorizePlatform(context.Background(), "alice@example.com", tt.action, tt.resource, tt.verb, "example")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("AuthorizePlatform() error = %v, wantErr %t", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if allowed != tt.want {
+				t.Fatalf("AuthorizePlatform() allowed = %t, want %t", allowed, tt.want)
+			}
+		})
+	}
+}
+
+func newEmptyAuthorizer(t *testing.T) *Authorizer {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := privatev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	stores, err := NewStores(func(resourceType string, scheme *runtime.Scheme, gvk runtimeschema.GroupVersionKind) (storage.ResourceStore, error) {
+		return memory.NewMemoryStore(resourceType, scheme, gvk), nil
+	}, scheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizer, err := NewAuthorizer(context.Background(), stores, logr.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authorizer
+}
+
+func resourceWithPolicyRef(resource types.ResourceInfo, verb, policyRef string) types.ResourceInfo {
+	copy := resource
+	copy.AuthorizationPolicyRefs = make(map[string]string, len(resource.AuthorizationPolicyRefs))
+	for key, value := range resource.AuthorizationPolicyRefs {
+		copy.AuthorizationPolicyRefs[key] = value
+	}
+	copy.AuthorizationPolicyRefs[verb] = policyRef
+	return copy
 }
 
 func TestGeneratePolicySetIsPerBinding(t *testing.T) {
