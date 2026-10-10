@@ -36,6 +36,14 @@ const (
 	DeleteControlPlaneUpgradePolicy Action = "DeleteControlPlaneUpgradePolicy"
 )
 
+const (
+	CreateControlPlaneUpgradePolicy Action = "CreateControlPlaneUpgradePolicy"
+	ListControlPlaneUpgradePolicies Action = "ListControlPlaneUpgradePolicies"
+	GetControlPlaneUpgradePolicy    Action = "GetControlPlaneUpgradePolicy"
+	UpdateControlPlaneUpgradePolicy Action = "UpdateControlPlaneUpgradePolicy"
+	DeleteControlPlaneUpgradePolicy Action = "DeleteControlPlaneUpgradePolicy"
+)
+
 var permissionActions = map[string]Action{
 	"cluster.create":     CreateCluster,
 	"cluster.list":       ListClusters,
