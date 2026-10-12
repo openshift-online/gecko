@@ -14,6 +14,7 @@ import (
 
 	"github.com/openshift-online/gecko/controllers/util/logger"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
+	quotapkg "github.com/openshift-online/gecko/platform-api/quota"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,15 +59,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Determine which Pending requests for this resource should be superseded.
-	toSupersede, isNewest := SupersessionTargets(&qr, allRequests.Items)
+	toSupersede, isNewest, newestName := SupersessionTargets(&qr, allRequests.Items)
 
 	// Supersede all stale requests.
 	now := metav1.NewTime(time.Now().UTC())
-	newest := NewestPendingRequest(PendingForResource(allRequests.Items, qr.Spec.Resource))
-	newestName := ""
-	if newest != nil {
-		newestName = newest.Name
-	}
 	for i := range toSupersede {
 		note := SupersedeNote(newestName)
 		updated := toSupersede[i].DeepCopy()
@@ -89,7 +85,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// Read the namespace's Quota to obtain the autoApproveThreshold.
 	var quota privatev1.Quota
-	if err := r.client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: "default"}, &quota); err != nil {
+	if err := r.client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: quotapkg.QuotaName}, &quota); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.log.Infof(ctx, "quota: no Quota object in namespace %s, leaving QuotaRequest %s in Pending",
 				req.Namespace, req.Name)
@@ -208,11 +204,13 @@ func NewestPendingRequest(pending []privatev1.QuotaRequest) *privatev1.QuotaRequ
 //     the newest Pending request for the same resource.
 //   - isNewest: whether current itself is the newest Pending request and should
 //     continue to the auto-approval step.
-func SupersessionTargets(current *privatev1.QuotaRequest, all []privatev1.QuotaRequest) (toSupersede []privatev1.QuotaRequest, isNewest bool) {
+//   - newestName: the name of the newest Pending request (empty string when
+//     there is only one Pending request, i.e. current itself).
+func SupersessionTargets(current *privatev1.QuotaRequest, all []privatev1.QuotaRequest) (toSupersede []privatev1.QuotaRequest, isNewest bool, newestName string) {
 	pending := PendingForResource(all, current.Spec.Resource)
 
 	if len(pending) <= 1 {
-		return nil, true
+		return nil, true, current.Name
 	}
 
 	newest := NewestPendingRequest(pending)
@@ -223,7 +221,7 @@ func SupersessionTargets(current *privatev1.QuotaRequest, all []privatev1.QuotaR
 		}
 	}
 
-	return toSupersede, current.Name == newest.Name
+	return toSupersede, current.Name == newest.Name, newest.Name
 }
 
 // AutoApproveThreshold returns the auto-approve threshold for the given

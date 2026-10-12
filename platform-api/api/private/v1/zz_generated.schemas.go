@@ -25,6 +25,10 @@ var (
 	//go:embed .schemas/nodepool_schema.yaml
 	NodePoolSchemaYAML string
 
+	// PlatformRoleSchemaYAML contains the OpenAPI v3 schema for PlatformRole.
+	//go:embed .schemas/platformrole_schema.yaml
+	PlatformRoleSchemaYAML string
+
 	// QuotaRequestSchemaYAML contains the OpenAPI v3 schema for QuotaRequest.
 	//go:embed .schemas/quotarequest_schema.yaml
 	QuotaRequestSchemaYAML string
@@ -32,6 +36,14 @@ var (
 	// QuotaSchemaYAML contains the OpenAPI v3 schema for Quota.
 	//go:embed .schemas/quota_schema.yaml
 	QuotaSchemaYAML string
+
+	// RoleBindingSchemaYAML contains the OpenAPI v3 schema for RoleBinding.
+	//go:embed .schemas/rolebinding_schema.yaml
+	RoleBindingSchemaYAML string
+
+	// RoleSchemaYAML contains the OpenAPI v3 schema for Role.
+	//go:embed .schemas/role_schema.yaml
+	RoleSchemaYAML string
 
 	// VersionSchemaYAML contains the OpenAPI v3 schema for Version.
 	//go:embed .schemas/version_schema.yaml
@@ -46,6 +58,10 @@ var ChannelResourceInfo = types.ResourceInfo{
 	Singular:   "channel",
 	Namespaced: false,
 	SchemaYAML: ChannelSchemaYAML,
+	// Generated from // +orlop:public-verbs annotation.
+	Verbs: []string{"get", "list"},
+	// Generated from // +orlop:authorization-exempt-verbs annotation.
+	AuthorizationExemptVerbs: []string{"get", "list"},
 }
 
 // ClusterResourceInfo describes the Cluster resource type.
@@ -109,6 +125,15 @@ var NodePoolResourceInfo = types.ResourceInfo{
 	},
 }
 
+// PlatformRoleResourceInfo describes the PlatformRole resource type.
+var PlatformRoleResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("PlatformRole"),
+	Plural:     "platformroles",
+	Singular:   "platformrole",
+	Namespaced: false,
+	SchemaYAML: PlatformRoleSchemaYAML,
+}
+
 // QuotaRequestResourceInfo describes the QuotaRequest resource type.
 var QuotaRequestResourceInfo = types.ResourceInfo{
 	GVK:        GroupVersion.WithKind("QuotaRequest"),
@@ -131,6 +156,24 @@ var QuotaResourceInfo = types.ResourceInfo{
 	Verbs: []string{"list", "get"},
 }
 
+// RoleBindingResourceInfo describes the RoleBinding resource type.
+var RoleBindingResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("RoleBinding"),
+	Plural:     "rolebindings",
+	Singular:   "rolebinding",
+	Namespaced: true,
+	SchemaYAML: RoleBindingSchemaYAML,
+}
+
+// RoleResourceInfo describes the Role resource type.
+var RoleResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("Role"),
+	Plural:     "roles",
+	Singular:   "role",
+	Namespaced: true,
+	SchemaYAML: RoleSchemaYAML,
+}
+
 // VersionResourceInfo describes the Version resource type.
 var VersionResourceInfo = types.ResourceInfo{
 	GVK:        GroupVersion.WithKind("Version"),
@@ -138,6 +181,10 @@ var VersionResourceInfo = types.ResourceInfo{
 	Singular:   "version",
 	Namespaced: false,
 	SchemaYAML: VersionSchemaYAML,
+	// Generated from // +orlop:public-verbs annotation.
+	Verbs: []string{"get", "list"},
+	// Generated from // +orlop:authorization-exempt-verbs annotation.
+	AuthorizationExemptVerbs: []string{"get", "list"},
 }
 
 // GetResourceInfos returns ResourceInfo definitions for all types in this package.
@@ -148,8 +195,11 @@ func GetResourceInfos() []types.ResourceInfo {
 		ClusterResourceInfo,
 		ControlPlaneUpgradePolicyResourceInfo,
 		NodePoolResourceInfo,
+		PlatformRoleResourceInfo,
 		QuotaRequestResourceInfo,
 		QuotaResourceInfo,
+		RoleBindingResourceInfo,
+		RoleResourceInfo,
 		VersionResourceInfo,
 	}
 }

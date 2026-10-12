@@ -141,7 +141,7 @@ func TestNewestPendingRequest_DoesNotMutateInput(t *testing.T) {
 
 func TestSupersessionTargets_SinglePending_IsNewest(t *testing.T) {
 	current := pendingRequest("only", "hostedclusters", t0)
-	toSupersede, isNewest := SupersessionTargets(&current, []privatev1.QuotaRequest{current})
+	toSupersede, isNewest, _ := SupersessionTargets(&current, []privatev1.QuotaRequest{current})
 	assert.Empty(t, toSupersede)
 	assert.True(t, isNewest)
 }
@@ -151,7 +151,7 @@ func TestSupersessionTargets_CurrentIsOldest(t *testing.T) {
 	newer := pendingRequest("new", "hostedclusters", t1)
 	all := []privatev1.QuotaRequest{current, newer}
 
-	toSupersede, isNewest := SupersessionTargets(&current, all)
+	toSupersede, isNewest, _ := SupersessionTargets(&current, all)
 	require.Len(t, toSupersede, 1)
 	assert.Equal(t, "old", toSupersede[0].Name)
 	assert.False(t, isNewest, "current is not the newest")
@@ -163,7 +163,7 @@ func TestSupersessionTargets_CurrentIsNewest(t *testing.T) {
 	current := pendingRequest("new", "hostedclusters", t2)
 	all := []privatev1.QuotaRequest{old, middle, current}
 
-	toSupersede, isNewest := SupersessionTargets(&current, all)
+	toSupersede, isNewest, _ := SupersessionTargets(&current, all)
 	require.Len(t, toSupersede, 2)
 	names := []string{toSupersede[0].Name, toSupersede[1].Name}
 	assert.ElementsMatch(t, []string{"old", "middle"}, names)
@@ -176,7 +176,7 @@ func TestSupersessionTargets_IgnoresOtherResources(t *testing.T) {
 	np := pendingRequest("np-old", "nodepools", t0)
 	all := []privatev1.QuotaRequest{current, np}
 
-	toSupersede, isNewest := SupersessionTargets(&current, all)
+	toSupersede, isNewest, _ := SupersessionTargets(&current, all)
 	assert.Empty(t, toSupersede)
 	assert.True(t, isNewest)
 }
@@ -187,7 +187,7 @@ func TestSupersessionTargets_IgnoresNonPending(t *testing.T) {
 	all := []privatev1.QuotaRequest{current, approved}
 
 	// Approved request must not be treated as superseding the Pending one.
-	toSupersede, isNewest := SupersessionTargets(&current, all)
+	toSupersede, isNewest, _ := SupersessionTargets(&current, all)
 	assert.Empty(t, toSupersede)
 	assert.True(t, isNewest)
 }
@@ -199,14 +199,14 @@ func TestSupersessionTargets_ThreeWayTie_DeterministicWinner(t *testing.T) {
 	gamma := pendingRequest("gamma", "hostedclusters", t0)
 	all := []privatev1.QuotaRequest{alpha, beta, gamma}
 
-	toSupersede, isNewest := SupersessionTargets(&gamma, all)
+	toSupersede, isNewest, _ := SupersessionTargets(&gamma, all)
 	require.Len(t, toSupersede, 2)
 	names := []string{toSupersede[0].Name, toSupersede[1].Name}
 	assert.ElementsMatch(t, []string{"alpha", "beta"}, names)
 	assert.True(t, isNewest)
 
 	// Alpha's reconcile: it is NOT the newest.
-	toSupersede2, isNewest2 := SupersessionTargets(&alpha, all)
+	toSupersede2, isNewest2, _ := SupersessionTargets(&alpha, all)
 	require.Len(t, toSupersede2, 2)
 	assert.False(t, isNewest2)
 }
@@ -284,7 +284,7 @@ func TestSupersessionTargets_TwoResourcesIndependent(t *testing.T) {
 	all := []privatev1.QuotaRequest{hcNew, hcOld, npOld}
 
 	// Reconciling hc-new: it is the newest for hostedclusters.
-	toSupersede, isNewest := SupersessionTargets(&hcNew, all)
+	toSupersede, isNewest, _ := SupersessionTargets(&hcNew, all)
 	require.Len(t, toSupersede, 1)
 	assert.Equal(t, "hc-old", toSupersede[0].Name)
 	assert.True(t, isNewest)
