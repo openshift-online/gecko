@@ -58,8 +58,9 @@ type QuotaResourceSpec struct {
 	Resource string `json:"resource"`
 
 	// limit is the effective enforced limit for this resource in the namespace.
-	// It reflects the base limit, adjusted by any approved QuotaRequest or
-	// operator-set manualLimit.
+	// It reflects the base limit, raised by any approved QuotaRequest.
+	// Operators may set this directly via the private API to lower or raise the
+	// ceiling independently of the QuotaRequest workflow.
 
 	// +required
 	// +kubebuilder:validation:Minimum=0

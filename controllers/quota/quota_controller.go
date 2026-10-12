@@ -242,13 +242,10 @@ func BuildHighUsageCondition(existing []metav1.Condition, highUsageResources []s
 }
 
 // EffectiveLimitFromSpec returns the enforced limit for the resource from the
-// Quota spec, applying precedence: manualLimit > limit > base default.
+// Quota spec, falling back to the base default when the resource entry is absent.
 func EffectiveLimitFromSpec(quota *privatev1.Quota, resource string) int32 {
 	for _, r := range quota.Spec.Resources {
 		if r.Resource == resource {
-			if r.ManualLimit != nil {
-				return *r.ManualLimit
-			}
 			return r.Limit
 		}
 	}

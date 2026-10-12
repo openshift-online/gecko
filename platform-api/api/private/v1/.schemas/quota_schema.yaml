@@ -42,15 +42,9 @@ properties:
             limit:
               description: |-
                 limit is the effective enforced limit for this resource in the namespace.
-                It reflects the base limit, adjusted by any approved QuotaRequest or
-                operator-set manualLimit.
-              format: int32
-              minimum: 0
-              type: integer
-            manualLimit:
-              description: |-
-                manualLimit is an operator-set override. When set, it takes precedence over
-                the base limit and any approved QuotaRequests. Visible via the private API only.
+                It reflects the base limit, raised by any approved QuotaRequest.
+                Operators may set this directly via the private API to lower or raise the
+                ceiling independently of the QuotaRequest workflow.
               format: int32
               minimum: 0
               type: integer

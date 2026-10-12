@@ -59,18 +59,13 @@ type QuotaResourceSpec struct {
 	Resource string `json:"resource"`
 
 	// limit is the effective enforced limit for this resource in the namespace.
-	// It reflects the base limit, adjusted by any approved QuotaRequest or
-	// operator-set manualLimit.
+	// It reflects the base limit, raised by any approved QuotaRequest.
+	// Operators may set this directly via the private API to lower or raise the
+	// ceiling independently of the QuotaRequest workflow.
 	// +orlop:public
 	// +required
 	// +kubebuilder:validation:Minimum=0
 	Limit int32 `json:"limit"`
-
-	// manualLimit is an operator-set override. When set, it takes precedence over
-	// the base limit and any approved QuotaRequests. Visible via the private API only.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	ManualLimit *int32 `json:"manualLimit,omitempty"`
 
 	// autoApproveThreshold is the maximum requestedLimit that the QuotaRequest
 	// controller will approve automatically without operator intervention.
