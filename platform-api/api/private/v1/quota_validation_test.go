@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // errQuotaExceeded is a test-only sentinel error returned by quota hook stubs.
@@ -18,6 +20,20 @@ func TestQuotaRequestValidateDelete_ApprovedIsRejected(t *testing.T) {
 
 	if err := qr.ValidateDelete(context.Background()); err == nil {
 		t.Error("expected error deleting Approved QuotaRequest, got nil")
+	}
+}
+
+func TestQuotaRequestValidateDelete_ApprovedReturnsConflict(t *testing.T) {
+	qr := &QuotaRequest{}
+	qr.Name = "req-1"
+	qr.Status.Phase = QuotaRequestPhaseApproved
+
+	err := qr.ValidateDelete(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !apierrors.IsConflict(err) {
+		t.Errorf("expected Conflict StatusError (HTTP 409), got %T: %v", err, err)
 	}
 }
 

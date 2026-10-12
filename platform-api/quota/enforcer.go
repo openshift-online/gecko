@@ -11,7 +11,9 @@ import (
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -60,8 +62,15 @@ func NewStoreEnforcer(
 
 // CheckQuota verifies that creating one more resource of the given kind in the
 // given namespace would not exceed the namespace's quota limit.
+//
+// If the quota store is unavailable the call fails closed: an internal-server
+// error is returned and the creation request is rejected. This prevents quota
+// bypass during a storage outage.
 func (e *StoreEnforcer) CheckQuota(ctx context.Context, namespace, resource string) error {
-	limit := e.effectiveLimit(ctx, namespace, resource)
+	limit, err := e.effectiveLimit(ctx, namespace, resource)
+	if err != nil {
+		return fmt.Errorf("quota check failed: unable to read quota for namespace %q: %w", namespace, err)
+	}
 
 	current, err := e.countCurrent(ctx, namespace, resource)
 	if err != nil {
@@ -74,18 +83,28 @@ func (e *StoreEnforcer) CheckQuota(ctx context.Context, namespace, resource stri
 	return nil
 }
 
-func (e *StoreEnforcer) effectiveLimit(ctx context.Context, namespace, resource string) int32 {
+// effectiveLimit returns the enforced limit for resource in namespace.
+// It fails closed: if the Quota object cannot be read, it returns an error
+// rather than silently falling back to the default limit.
+// A missing Quota object (NotFound) is the only accepted absence — in that
+// case the hard-coded default limit is returned.
+func (e *StoreEnforcer) effectiveLimit(ctx context.Context, namespace, resource string) (int32, error) {
 	obj, err := e.quotaStore.Get(ctx, namespace, QuotaName)
 	if err != nil {
-		return DefaultLimit(resource)
+		if apierrors.IsNotFound(err) {
+			// No Quota object yet — quota controller hasn't bootstrapped it.
+			// Apply the hard-coded default; this is not a storage failure.
+			return DefaultLimit(resource), nil
+		}
+		return 0, err
 	}
 
 	quota, ok := obj.(*privatev1.Quota)
 	if !ok {
-		return DefaultLimit(resource)
+		return 0, fmt.Errorf("quota store returned unexpected type %T", obj)
 	}
 
-	return EffectiveLimit(quota, resource)
+	return EffectiveLimit(quota, resource), nil
 }
 
 func (e *StoreEnforcer) countCurrent(ctx context.Context, namespace, resource string) (int32, error) {
@@ -142,12 +161,45 @@ func DefaultLimit(resource string) int32 {
 	return DefaultClusterLimit
 }
 
-// QuotaExceededError returns the standardized error returned to the API caller
-// when a creation request would exceed the quota limit.
+// QuotaExceededError returns a *apierrors.StatusError with HTTP 403 Forbidden
+// and reason "QuotaExceeded". The Status object carries a structured
+// StatusDetails payload so that API clients can extract the current usage and
+// enforced limit without parsing the human-readable message string.
+//
+// The HTTP 403 status follows Google API conventions for quota exhaustion, as
+// opposed to HTTP 429 (rate-limit) or HTTP 507 (storage exhaustion).
 func QuotaExceededError(namespace, resource string, current, limit int32) error {
-	return fmt.Errorf(
+	msg := fmt.Sprintf(
 		"quota exceeded: namespace %q has %d %s (limit: %d); "+
 			"submit a QuotaRequest to request a limit increase",
 		namespace, current, resource, limit,
 	)
+
+	return &apierrors.StatusError{ErrStatus: metav1.Status{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Status",
+		},
+		Status:  metav1.StatusFailure,
+		Message: msg,
+		Reason:  "QuotaExceeded",
+		Details: &metav1.StatusDetails{
+			// Kind identifies the resource whose quota was exceeded.
+			Kind: resource,
+			// Causes carries the structured quota state for programmatic clients.
+			Causes: []metav1.StatusCause{
+				{
+					Type:    "QuotaExceeded",
+					Message: fmt.Sprintf("current %s count in namespace %q is %d", resource, namespace, current),
+					Field:   "quota.current",
+				},
+				{
+					Type:    "QuotaExceeded",
+					Message: fmt.Sprintf("enforced %s limit in namespace %q is %d", resource, namespace, limit),
+					Field:   "quota.limit",
+				},
+			},
+		},
+		Code: 403,
+	}}
 }
