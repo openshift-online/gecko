@@ -79,7 +79,7 @@ func (r *QuotaStatusReconciler) Reconcile(ctx context.Context, req reconcile.Req
 // base limits and an empty status.
 func (r *QuotaStatusReconciler) ensureQuota(ctx context.Context, ns string) (*privatev1.Quota, error) {
 	var quota privatev1.Quota
-	err := r.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: "default"}, &quota)
+	err := r.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: quotapkg.QuotaName}, &quota)
 	if err == nil {
 		return &quota, nil
 	}
@@ -91,7 +91,7 @@ func (r *QuotaStatusReconciler) ensureQuota(ctx context.Context, ns string) (*pr
 	defaultThresholdNodePools := quotapkg.DefaultAutoApproveThresholdNodePools
 	quota = privatev1.Quota{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "default",
+			Name:      quotapkg.QuotaName,
 			Namespace: ns,
 		},
 		Spec: privatev1.QuotaSpec{
@@ -111,7 +111,7 @@ func (r *QuotaStatusReconciler) ensureQuota(ctx context.Context, ns string) (*pr
 	}
 	if err := r.client.Create(ctx, &quota); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			if getErr := r.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: "default"}, &quota); getErr != nil {
+			if getErr := r.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: quotapkg.QuotaName}, &quota); getErr != nil {
 				return nil, fmt.Errorf("get Quota after concurrent creation: %w", getErr)
 			}
 			return &quota, nil
@@ -166,7 +166,7 @@ func BuildQuotaStatus(quota *privatev1.Quota, counts map[string]int32, now metav
 
 	for _, resource := range resourceNames {
 		current := counts[resource]
-		limit := EffectiveLimitFromSpec(quota, resource)
+		limit := quotapkg.EffectiveLimit(quota, resource)
 
 		var reachedTime *metav1.Time
 		if current >= limit {
@@ -239,20 +239,6 @@ func BuildHighUsageCondition(existing []metav1.Condition, highUsageResources []s
 	copy(out, existing)
 	meta.SetStatusCondition(&out, newCond)
 	return out
-}
-
-// EffectiveLimitFromSpec returns the enforced limit for the resource from the
-// Quota spec, falling back to the base default when the resource entry is absent.
-func EffectiveLimitFromSpec(quota *privatev1.Quota, resource string) int32 {
-	for _, r := range quota.Spec.Resources {
-		if r.Resource == resource {
-			return r.Limit
-		}
-	}
-	if resource == "nodepools" {
-		return quotapkg.DefaultNodePoolLimit
-	}
-	return quotapkg.DefaultClusterLimit
 }
 
 // StatusEqual reports whether two QuotaStatus values are semantically identical,

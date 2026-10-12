@@ -33,6 +33,14 @@ var (
 	//go:embed .schemas/quota_schema.yaml
 	QuotaSchemaYAML string
 
+	// RoleBindingSchemaYAML contains the OpenAPI v3 schema for RoleBinding.
+	//go:embed .schemas/rolebinding_schema.yaml
+	RoleBindingSchemaYAML string
+
+	// RoleSchemaYAML contains the OpenAPI v3 schema for Role.
+	//go:embed .schemas/role_schema.yaml
+	RoleSchemaYAML string
+
 	// VersionSchemaYAML contains the OpenAPI v3 schema for Version.
 	//go:embed .schemas/version_schema.yaml
 	VersionSchemaYAML string
@@ -46,6 +54,10 @@ var ChannelResourceInfo = types.ResourceInfo{
 	Singular:   "channel",
 	Namespaced: false,
 	SchemaYAML: ChannelSchemaYAML,
+	// Generated from // +orlop:public-verbs annotation.
+	Verbs: []string{"get", "list"},
+	// Generated from // +orlop:authorization-exempt-verbs annotation.
+	AuthorizationExemptVerbs: []string{"get", "list"},
 }
 
 // ClusterResourceInfo describes the Cluster resource type.
@@ -131,6 +143,24 @@ var QuotaResourceInfo = types.ResourceInfo{
 	Verbs: []string{"list", "get"},
 }
 
+// RoleBindingResourceInfo describes the RoleBinding resource type.
+var RoleBindingResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("RoleBinding"),
+	Plural:     "rolebindings",
+	Singular:   "rolebinding",
+	Namespaced: true,
+	SchemaYAML: RoleBindingSchemaYAML,
+}
+
+// RoleResourceInfo describes the Role resource type.
+var RoleResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("Role"),
+	Plural:     "roles",
+	Singular:   "role",
+	Namespaced: true,
+	SchemaYAML: RoleSchemaYAML,
+}
+
 // VersionResourceInfo describes the Version resource type.
 var VersionResourceInfo = types.ResourceInfo{
 	GVK:        GroupVersion.WithKind("Version"),
@@ -138,6 +168,10 @@ var VersionResourceInfo = types.ResourceInfo{
 	Singular:   "version",
 	Namespaced: false,
 	SchemaYAML: VersionSchemaYAML,
+	// Generated from // +orlop:public-verbs annotation.
+	Verbs: []string{"get", "list"},
+	// Generated from // +orlop:authorization-exempt-verbs annotation.
+	AuthorizationExemptVerbs: []string{"get", "list"},
 }
 
 // GetResourceInfos returns ResourceInfo definitions for all types in this package.
@@ -150,6 +184,8 @@ func GetResourceInfos() []types.ResourceInfo {
 		NodePoolResourceInfo,
 		QuotaRequestResourceInfo,
 		QuotaResourceInfo,
+		RoleBindingResourceInfo,
+		RoleResourceInfo,
 		VersionResourceInfo,
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
-	quotapkg "github.com/openshift-online/gecko/platform-api/quota"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -35,20 +34,6 @@ func counts(clusters, nodepools int32) map[string]int32 {
 
 func fixedNow() metav1.Time {
 	return metav1.NewTime(time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC))
-}
-
-// ─── EffectiveLimitFromSpec ───────────────────────────────────────────────────
-
-func TestEffectiveLimitFromSpec_UsesLimit(t *testing.T) {
-	q := quotaWithLimits(30, 200)
-	assert.Equal(t, int32(30), EffectiveLimitFromSpec(q, "hostedclusters"))
-	assert.Equal(t, int32(200), EffectiveLimitFromSpec(q, "nodepools"))
-}
-
-func TestEffectiveLimitFromSpec_FallsBackToDefault(t *testing.T) {
-	q := &privatev1.Quota{} // empty spec
-	assert.Equal(t, quotapkg.DefaultClusterLimit, EffectiveLimitFromSpec(q, "hostedclusters"))
-	assert.Equal(t, quotapkg.DefaultNodePoolLimit, EffectiveLimitFromSpec(q, "nodepools"))
 }
 
 // ─── BuildHighUsageCondition ──────────────────────────────────────────────────
