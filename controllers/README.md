@@ -29,6 +29,9 @@ graph TD
     B -->|writes PlacementResult| K
     C -->|writes VersionResolution| K
 
+    V[(Version catalog)] -->|release image| C
+    V -->|release image| G
+
     K -->|PlacementResult + VR| D[hc-controller]
 
     E[NodePool CR] -->|reconciles| G[nodepoolvrresolution]
@@ -79,10 +82,15 @@ Reconciles `Cluster` resources. Selects an eligible management cluster and DNS b
 
 ### version-resolution
 
-Reconciles `Cluster` resources. Resolves the OCP release image for the requested version via the Cincinnati API.
+Reconciles `Cluster` resources. Resolves the OCP release image for the requested version from the `Version` catalog maintained by version-sync.
 
-- Queries the Cincinnati update graph for the matching release payload
-- Writes `Status.VersionResolution` (ReleaseVersion, ReleaseImage, CincinnatiChannel)
+- Looks up the cluster-scoped `Version` named after the requested version and checks that `Spec.ChannelGroups` contains the requested channel group
+- Writes `Status.VersionResolution` (ReleaseVersion, ReleaseImage, ChannelGroup)
+- Pins the result: it re-resolves only when the requested version or channel group changes, so later catalog changes never move a running cluster to a different image
+- Watches `Version` resources, so a cluster requested before the catalog caught up resolves as soon as its version appears
+- Sets `VersionResolved=False` with reason `VersionNotInCatalog` or `VersionNotInChannelGroup` when the catalog does not offer the release
+
+Only version-sync talks to an external release source; resolution is a cluster-local lookup.
 
 ### nodepool-vr (NodePool Version Resolution)
 
@@ -170,7 +178,7 @@ controllers/
   nodepool/               # NodePool controller + manifest building
   nodepoolvrresolution/   # NodePool version-resolution controller
   placement/              # Placement controller + dynamic MC selector
-  versionresolution/      # Version-resolution controller + Cincinnati client
+  versionresolution/      # Version-resolution controller + Version catalog lookup + Cincinnati client (used by version-sync)
   util/                   # Shared packages (constants, errors, logger, setup)
   main.go                 # Root cobra command
 ```

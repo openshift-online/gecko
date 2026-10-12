@@ -48,10 +48,6 @@ linters:
           - unparam
         text: '(makeNP - clusterID|makeCluster - id|npReq - clusterID) always receives "cluster-1"'
         path: '^nodepoolvrresolution/nodepoolvrresolution_controller_test\.go$'
-      - linters:
-          - unparam
-        text: 'makeNP - npID always receives "np-1"'
-        path: '^nodepoolvrresolution/nodepoolvrresolution_controller_test\.go$'
 
 severity:
   default: error
