@@ -65,18 +65,6 @@ func newQuota(ns string, clusterLimit, nodepoolLimit int32) *privatev1.Quota {
 	}
 }
 
-func newQuotaWithManual(ns string, limit, manual int32, resource string) *privatev1.Quota {
-	return &privatev1.Quota{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "gcp.managed.openshift.io/v1", Kind: "Quota"},
-		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
-		Spec: privatev1.QuotaSpec{
-			Resources: []privatev1.QuotaResourceSpec{
-				{Resource: resource, Limit: limit, ManualLimit: &manual},
-			},
-		},
-	}
-}
-
 func newCluster(ns, name string) *privatev1.Cluster {
 	return &privatev1.Cluster{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "gcp.managed.openshift.io/v1", Kind: "Cluster"},
@@ -105,13 +93,6 @@ func TestEffectiveLimit_ReturnsSpecLimit(t *testing.T) {
 	}
 	if got := EffectiveLimit(q, "nodepools"); got != 200 {
 		t.Errorf("nodepools limit: got %d, want 200", got)
-	}
-}
-
-func TestEffectiveLimit_ManualOverridesSpec(t *testing.T) {
-	q := newQuotaWithManual("ns", 50, 100, "hostedclusters")
-	if got := EffectiveLimit(q, "hostedclusters"); got != 100 {
-		t.Errorf("manual limit: got %d, want 100", got)
 	}
 }
 
@@ -283,20 +264,6 @@ func TestCheckQuota_UsesDefaultWhenNoQuotaObject(t *testing.T) {
 	e := enforcer(t, qs, cs, ns)
 	if err := e.CheckQuota(ctx, "ns", "hostedclusters"); err != nil {
 		t.Errorf("expected no error with counts below default limit, got: %v", err)
-	}
-}
-
-func TestCheckQuota_ManualLimitApplied(t *testing.T) {
-	ctx := context.Background()
-	qs, cs, ns := quotaStore(t), clusterStore(t), nodepoolStore(t)
-
-	// manualLimit=1 overrides Limit=50.
-	mustCreate(t, qs, newQuotaWithManual("ns", 50, 1, "hostedclusters"))
-	mustCreate(t, cs, newCluster("ns", "c1"))
-
-	e := enforcer(t, qs, cs, ns)
-	if err := e.CheckQuota(ctx, "ns", "hostedclusters"); err == nil {
-		t.Error("expected quota exceeded with manualLimit=1 and 1 cluster, got nil")
 	}
 }
 

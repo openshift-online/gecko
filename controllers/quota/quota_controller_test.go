@@ -26,17 +26,6 @@ func quotaWithLimits(clusterLimit, nodepoolLimit int32) *privatev1.Quota {
 	}
 }
 
-func quotaWithManualLimits(clusterManual, nodepoolManual int32) *privatev1.Quota {
-	return &privatev1.Quota{
-		Spec: privatev1.QuotaSpec{
-			Resources: []privatev1.QuotaResourceSpec{
-				{Resource: "hostedclusters", Limit: 50, ManualLimit: &clusterManual},
-				{Resource: "nodepools", Limit: 500, ManualLimit: &nodepoolManual},
-			},
-		},
-	}
-}
-
 func counts(clusters, nodepools int32) map[string]int32 {
 	return map[string]int32{
 		"hostedclusters": clusters,
@@ -54,12 +43,6 @@ func TestEffectiveLimitFromSpec_UsesLimit(t *testing.T) {
 	q := quotaWithLimits(30, 200)
 	assert.Equal(t, int32(30), EffectiveLimitFromSpec(q, "hostedclusters"))
 	assert.Equal(t, int32(200), EffectiveLimitFromSpec(q, "nodepools"))
-}
-
-func TestEffectiveLimitFromSpec_ManualLimitTakesPrecedence(t *testing.T) {
-	q := quotaWithManualLimits(100, 1000)
-	assert.Equal(t, int32(100), EffectiveLimitFromSpec(q, "hostedclusters"))
-	assert.Equal(t, int32(1000), EffectiveLimitFromSpec(q, "nodepools"))
 }
 
 func TestEffectiveLimitFromSpec_FallsBackToDefault(t *testing.T) {
@@ -212,17 +195,6 @@ func TestBuildQuotaStatus_HighUsage_Below80Percent(t *testing.T) {
 	cond := findHighUsageCondition(s.Conditions)
 	require.NotNil(t, cond)
 	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-}
-
-func TestBuildQuotaStatus_ManualLimitApplied(t *testing.T) {
-	// manualLimit = 20 takes precedence over limit = 50.
-	// 16/20 = 80% → HighUsage.
-	q := quotaWithManualLimits(20, 500)
-	s := BuildQuotaStatus(q, counts(16, 0), fixedNow())
-
-	cond := findHighUsageCondition(s.Conditions)
-	require.NotNil(t, cond)
-	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 }
 
 // ─── StatusEqual ─────────────────────────────────────────────────────────────

@@ -139,13 +139,10 @@ func (e *StoreEnforcer) storeFor(resource string) storage.ResourceStore {
 // ─── Pure business logic (package-level, easily unit-tested) ─────────────────
 
 // EffectiveLimit returns the enforced limit for the given resource from the
-// Quota spec, applying precedence: manualLimit > limit > DefaultLimit.
+// Quota spec, falling back to DefaultLimit when the resource entry is absent.
 func EffectiveLimit(quota *privatev1.Quota, resource string) int32 {
 	for _, r := range quota.Spec.Resources {
 		if r.Resource == resource {
-			if r.ManualLimit != nil {
-				return *r.ManualLimit
-			}
 			return r.Limit
 		}
 	}
