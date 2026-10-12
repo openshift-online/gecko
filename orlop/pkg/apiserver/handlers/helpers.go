@@ -12,6 +12,7 @@ import (
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/types"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -45,6 +46,28 @@ func authorizeRequestObject(w http.ResponseWriter, r *http.Request, obj client.O
 	}
 	writeError(w, http.StatusForbidden, "forbidden")
 	return false
+}
+
+// validationStatusCode maps a validation error returned by ValidateCreate or
+// ValidateDelete to the appropriate HTTP status code. It inspects the error for
+// known apimachinery StatusError codes so that domain-specific validators can
+// return semantically precise HTTP responses (e.g. 403 for quota exhaustion,
+// 409 for immutable-record conflicts) without the handler needing to know about
+// the individual validator implementations.
+//
+// Unknown errors fall back to 400 Bad Request, preserving the existing behaviour
+// for all validators that return plain fmt.Errorf values.
+func validationStatusCode(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	if apierrors.IsForbidden(err) {
+		return http.StatusForbidden
+	}
+	if apierrors.IsConflict(err) {
+		return http.StatusConflict
+	}
+	return http.StatusBadRequest
 }
 
 // specChanged checks if the spec field has changed between two objects.

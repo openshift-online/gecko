@@ -2,11 +2,14 @@ package quota
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
+	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/memory"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -152,6 +155,89 @@ func TestQuotaExceededError_ContainsExpectedFields(t *testing.T) {
 			t.Errorf("error message %q missing %q", msg, want)
 		}
 	}
+}
+
+func TestQuotaExceededError_IsForbidden(t *testing.T) {
+	err := QuotaExceededError("acme-prod", "hostedclusters", 50, 50)
+	if !apierrors.IsForbidden(err) {
+		t.Errorf("QuotaExceededError must be a Forbidden StatusError; got %T: %v", err, err)
+	}
+}
+
+func TestQuotaExceededError_HasReasonAndStructuredDetails(t *testing.T) {
+	err := QuotaExceededError("acme-prod", "hostedclusters", 12, 50)
+	se, ok := err.(*apierrors.StatusError)
+	if !ok {
+		t.Fatalf("expected *apierrors.StatusError, got %T", err)
+	}
+
+	if se.ErrStatus.Reason != "QuotaExceeded" {
+		t.Errorf("Reason: got %q, want %q", se.ErrStatus.Reason, "QuotaExceeded")
+	}
+	if se.ErrStatus.Code != 403 {
+		t.Errorf("Code: got %d, want 403", se.ErrStatus.Code)
+	}
+
+	if se.ErrStatus.Details == nil {
+		t.Fatal("Details must not be nil")
+	}
+	if se.ErrStatus.Details.Kind != "hostedclusters" {
+		t.Errorf("Details.Kind: got %q, want %q", se.ErrStatus.Details.Kind, "hostedclusters")
+	}
+
+	if len(se.ErrStatus.Details.Causes) == 0 {
+		t.Fatal("Details.Causes must not be empty")
+	}
+	// Both causes must mention the namespace.
+	for _, cause := range se.ErrStatus.Details.Causes {
+		if !contains(cause.Message, "acme-prod") {
+			t.Errorf("Cause.Message %q missing namespace %q", cause.Message, "acme-prod")
+		}
+	}
+}
+
+// ─── StoreEnforcer.CheckQuota — fail-closed storage error ────────────────────
+
+// errorStore is a storage.ResourceStore whose Get always returns a non-NotFound
+// error, simulating a transient storage failure.
+type errorStore struct {
+	err error
+}
+
+func (s *errorStore) Get(_ context.Context, _, _ string) (client.Object, error) {
+	return nil, s.err
+}
+func (s *errorStore) List(_ context.Context, _ storage.ListOptions) (client.ObjectList, error) {
+	return nil, s.err
+}
+func (s *errorStore) Create(_ context.Context, _ client.Object) error { return s.err }
+func (s *errorStore) Update(_ context.Context, _ client.Object) error { return s.err }
+func (s *errorStore) Delete(_ context.Context, _, _ string) error     { return s.err }
+func (s *errorStore) Watch(_ context.Context, _ storage.ListOptions, _ string) (<-chan storage.ResourceEvent, func(), error) {
+	return nil, func() {}, s.err
+}
+
+func TestCheckQuota_FailsClosedOnStorageError(t *testing.T) {
+	// When the quota store returns a non-NotFound error, CheckQuota must
+	// fail closed: reject the creation request rather than fall back to
+	// the default limit.
+	ctx := context.Background()
+
+	// Use a memory cluster store so countCurrent can succeed if reached.
+	cs := clusterStore(t)
+	ns := nodepoolStore(t)
+
+	storageErr := fmt.Errorf("connection refused")
+	e := NewStoreEnforcer(&errorStore{err: storageErr}, cs, ns)
+
+	err := e.CheckQuota(ctx, "ns", "hostedclusters")
+	if err == nil {
+		t.Fatal("expected error when quota store is unavailable, got nil")
+	}
+	if contains(err.Error(), "connection refused") || contains(err.Error(), "quota check failed") {
+		return // correct — fail-closed
+	}
+	t.Errorf("unexpected error message: %v", err)
 }
 
 // ─── StoreEnforcer.CheckQuota ─────────────────────────────────────────────────
