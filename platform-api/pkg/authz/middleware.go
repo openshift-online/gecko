@@ -10,20 +10,16 @@ import (
 
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/types"
 	"github.com/openshift-online/gecko/platform-api/pkg/authn"
-	"github.com/openshift-online/gecko/platform-api/pkg/publicaccess"
 )
 
-// Middleware enforces Cedar authorization for the public CRUD API. The
-// object-state-aware and per-item list phases are not part of this foundation;
-// it authorizes namespace-scoped operations and fails closed for
-// cross-namespace collection requests.
-func Middleware(authorizer *Authorizer, logger logr.Logger, authorizationExemptResources []types.ResourceInfo) func(http.Handler) http.Handler {
+// Middleware enforces Cedar authorization for public API operations.
+func Middleware(authorizer *Authorizer, logger logr.Logger, resources []types.ResourceInfo) func(http.Handler) http.Handler {
 	if logger.GetSink() == nil {
 		logger = logr.Discard()
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isMetadataPath(r.URL.Path) || publicaccess.IsAuthorizationExemptRequest(r, authorizationExemptResources) {
+			if isMetadataPath(r.URL.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -45,20 +41,47 @@ func Middleware(authorizer *Authorizer, logger logr.Logger, authorizationExemptR
 				writeForbidden(w)
 				return
 			}
-			if requestInfo.namespace == "" {
-				// Cross-namespace filtering is not implemented in this
-				// foundation. Do not return all namespaces while it is absent.
+			if r.URL.Query().Get("watch") == "true" {
+				logger.Info("authorization denied for unsupported watch operation", "resource", requestInfo.plural)
 				writeForbidden(w)
 				return
 			}
-
+			resource, found := resourceForRequest(requestInfo, resources)
+			if !found {
+				logger.Info("authorization denied for unrecognized public API resource", "resource", requestInfo.plural)
+				writeForbidden(w)
+				return
+			}
+			verb, err := verbForRequest(r.Method, requestInfo.plural, requestInfo.named)
+			if err != nil {
+				logger.Info("authorization denied for unsupported public API operation", "method", r.Method, "resource", requestInfo.plural)
+				writeForbidden(w)
+				return
+			}
+			if !resource.VerbAllowed(verb) {
+				logger.Info("authorization denied for public API verb", "verb", verb, "resource", requestInfo.plural)
+				writeForbidden(w)
+				return
+			}
 			action, err := actionForRequest(r.Method, requestInfo.plural, requestInfo.named)
 			if err != nil {
 				logger.Info("authorization denied for unsupported public API operation", "method", r.Method, "resource", requestInfo.plural)
 				writeForbidden(w)
 				return
 			}
-			allowed, err := authorizer.Authorize(r.Context(), email, action, requestInfo.namespace)
+
+			var allowed bool
+			if resource.Namespaced {
+				if requestInfo.namespace == "" {
+					// Cross-namespace filtering is not implemented in the namespace
+					// authorization path.
+					writeForbidden(w)
+					return
+				}
+				allowed, err = authorizer.Authorize(r.Context(), email, action, requestInfo.namespace)
+			} else {
+				allowed, err = authorizer.AuthorizePlatform(r.Context(), email, action, resource, verb, requestInfo.name)
+			}
 			if err != nil {
 				logger.Error(err, "authorization evaluation failed closed", "method", r.Method, "resource", requestInfo.plural, "namespace", requestInfo.namespace)
 				writeForbidden(w)
@@ -75,8 +98,11 @@ func Middleware(authorizer *Authorizer, logger logr.Logger, authorizationExemptR
 }
 
 type parsedRequest struct {
+	group     string
+	version   string
 	namespace string
 	plural    string
+	name      string
 	named     bool
 }
 
@@ -95,7 +121,7 @@ func parseRequestPath(rawPath string) (parsedRequest, error) {
 	}
 	// parts[1] is the API group and parts[2] is the version.
 	i := 3
-	result := parsedRequest{}
+	result := parsedRequest{group: parts[1], version: parts[2]}
 	if parts[i] == "namespaces" {
 		if len(parts) <= i+2 || parts[i+1] == "" {
 			return parsedRequest{}, fmt.Errorf("namespace and resource are required")
@@ -114,7 +140,9 @@ func parseRequestPath(rawPath string) (parsedRequest, error) {
 		i++ // parent cluster name
 		if i >= len(parts) || parts[i] != "nodepools" {
 			if i == len(parts) {
-				return parsedRequest{namespace: result.namespace, plural: result.plural, named: true}, nil
+				result.named = true
+				result.name = parts[i-1]
+				return result, nil
 			}
 			return parsedRequest{}, fmt.Errorf("invalid cluster child path")
 		}
@@ -127,15 +155,26 @@ func parseRequestPath(rawPath string) (parsedRequest, error) {
 			return parsedRequest{}, fmt.Errorf("invalid resource path")
 		}
 		result.named = true
+		result.name = parts[i]
 		i++
 	}
 	if i != len(parts) {
 		return parsedRequest{}, fmt.Errorf("invalid resource path")
 	}
-	if result.namespace == "" && result.named {
-		return parsedRequest{}, fmt.Errorf("cluster-wide named resources are not public")
-	}
 	return result, nil
+}
+
+func resourceForRequest(request parsedRequest, resources []types.ResourceInfo) (types.ResourceInfo, bool) {
+	for _, resource := range resources {
+		if resource.GVK.Group != request.group || resource.GVK.Version != request.version || resource.Plural != request.plural {
+			continue
+		}
+		if resource.Namespaced != (request.namespace != "") {
+			continue
+		}
+		return resource, true
+	}
+	return types.ResourceInfo{}, false
 }
 
 func isMetadataPath(requestPath string) bool {

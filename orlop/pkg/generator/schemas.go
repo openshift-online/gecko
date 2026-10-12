@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -15,14 +16,14 @@ import (
 )
 
 type schemaInfo struct {
-	typeName                 string
-	plural                   string
-	singular                 string
-	namespaced               bool
-	schema                   *apiextv1.JSONSchemaProps
-	printerColumns           []printerColumn
-	verbs                    []string // from +orlop:public-verbs annotation; nil means all verbs allowed
-	authorizationExemptVerbs []string // from +orlop:authorization-exempt-verbs annotation
+	typeName                string
+	plural                  string
+	singular                string
+	namespaced              bool
+	schema                  *apiextv1.JSONSchemaProps
+	printerColumns          []printerColumn
+	verbs                   []string          // from +orlop:public-verbs annotation; nil means all verbs allowed
+	authorizationPolicyRefs map[string]string // from +orlop:authorization-policy annotation
 }
 
 type printerColumn struct {
@@ -168,14 +169,14 @@ func (g *Generator) embedSchemas(crdDir string, targetDir string) error {
 
 		kindName := crd.Spec.Names.Kind
 		schemas = append(schemas, schemaInfo{
-			typeName:                 kindName,
-			plural:                   crd.Spec.Names.Plural,
-			singular:                 crd.Spec.Names.Singular,
-			namespaced:               crd.Spec.Scope == apiextv1.NamespaceScoped,
-			schema:                   version.Schema.OpenAPIV3Schema,
-			printerColumns:           printerCols,
-			verbs:                    g.typeVerbs[kindName],
-			authorizationExemptVerbs: g.typeAuthorizationExemptVerbs[kindName],
+			typeName:                kindName,
+			plural:                  crd.Spec.Names.Plural,
+			singular:                crd.Spec.Names.Singular,
+			namespaced:              crd.Spec.Scope == apiextv1.NamespaceScoped,
+			schema:                  version.Schema.OpenAPIV3Schema,
+			printerColumns:          printerCols,
+			verbs:                   g.typeVerbs[kindName],
+			authorizationPolicyRefs: g.typeAuthorizationPolicyRefs[kindName],
 		})
 
 		// Remove the YAML file after extracting schema
@@ -286,16 +287,18 @@ func (g *Generator) generateSchemaGoFile(outputPath, packageDir string, schemas 
 			}
 			source.WriteString("},\n")
 		}
-		if len(s.authorizationExemptVerbs) > 0 {
-			source.WriteString("\t// Generated from // +orlop:authorization-exempt-verbs annotation.\n")
-			source.WriteString("\tAuthorizationExemptVerbs: []string{")
-			for i, v := range s.authorizationExemptVerbs {
-				if i > 0 {
-					source.WriteString(", ")
-				}
-				fmt.Fprintf(&source, "%q", v)
+		if len(s.authorizationPolicyRefs) > 0 {
+			source.WriteString("\t// Generated from // +orlop:authorization-policy annotation.\n")
+			source.WriteString("\tAuthorizationPolicyRefs: map[string]string{\n")
+			verbs := make([]string, 0, len(s.authorizationPolicyRefs))
+			for verb := range s.authorizationPolicyRefs {
+				verbs = append(verbs, verb)
 			}
-			source.WriteString("},\n")
+			sort.Strings(verbs)
+			for _, verb := range verbs {
+				fmt.Fprintf(&source, "\t\t%q: %q,\n", verb, s.authorizationPolicyRefs[verb])
+			}
+			source.WriteString("\t},\n")
 		}
 
 		source.WriteString("}\n\n")

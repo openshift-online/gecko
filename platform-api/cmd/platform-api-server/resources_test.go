@@ -4,17 +4,17 @@ import (
 	"testing"
 )
 
-func TestGetPublicResourcesAuthorizationExemptCatalogVerbs(t *testing.T) {
-	wantAuthorizationExempt := map[string]bool{
-		"Channel": true,
-		"Version": true,
+func TestGetPublicResourcesCatalogPolicyRefs(t *testing.T) {
+	wantPolicyRef := map[string]string{
+		"Channel": "authenticated-catalog-read",
+		"Version": "authenticated-catalog-read",
 	}
 	seen := make(map[string]bool)
 	for _, resource := range getPublicResources() {
-		if _, found := wantAuthorizationExempt[resource.GVK.Kind]; found {
+		if policyRef, found := wantPolicyRef[resource.GVK.Kind]; found {
 			seen[resource.GVK.Kind] = true
-			if !resource.AuthorizationExemptVerbAllowed("get") || !resource.AuthorizationExemptVerbAllowed("list") {
-				t.Errorf("%s must allow authorization-exempt get and list verbs", resource.GVK.Kind)
+			if resource.AuthorizationPolicyRefs["get"] != policyRef || resource.AuthorizationPolicyRefs["list"] != policyRef {
+				t.Errorf("%s policy refs = %#v, want get/list=%q", resource.GVK.Kind, resource.AuthorizationPolicyRefs, policyRef)
 			}
 			if resource.Namespaced {
 				t.Errorf("%s is namespaced, want cluster-scoped", resource.GVK.Kind)
@@ -29,11 +29,11 @@ func TestGetPublicResourcesAuthorizationExemptCatalogVerbs(t *testing.T) {
 			}
 			continue
 		}
-		if len(resource.AuthorizationExemptVerbs) != 0 {
-			t.Errorf("%s unexpectedly allows authorization-exempt verbs: %v", resource.GVK.Kind, resource.AuthorizationExemptVerbs)
+		if len(resource.AuthorizationPolicyRefs) != 0 {
+			t.Errorf("%s unexpectedly has authorization policy refs: %#v", resource.GVK.Kind, resource.AuthorizationPolicyRefs)
 		}
 	}
-	for kind := range wantAuthorizationExempt {
+	for kind := range wantPolicyRef {
 		if !seen[kind] {
 			t.Errorf("public resource %s not found", kind)
 		}

@@ -27,7 +27,7 @@ import (
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
+func TestPublicAPICatalogCedarAuthorizedReads(t *testing.T) {
 	privatePort := freePublicAPITestPort(t)
 	publicPort := freePublicAPITestPort(t)
 	publicResources := getPublicResources()
@@ -59,13 +59,32 @@ func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
 		},
 		ObjectMeta: metav1.ObjectMeta{Name: "stable"},
 		Spec: privatev1.ChannelSpec{
-			InstallDefaultVersion: "4.22.1",
-			FleetMinorVersion:     "4.22",
+			MinimumSupportedVersion: "4.22",
+			InstallDefaultVersion:   "4.22.1",
+			FleetMinorVersion:       "4.22",
 		},
 	}
 	channel.SetGroupVersionKind(channelGVK)
 	if err := channelStore.Create(context.Background(), channel); err != nil {
 		t.Fatalf("seed Channel: %v", err)
+	}
+
+	storageFactory := func(resourceType string, scheme *runtime.Scheme, gvk runtimeschema.GroupVersionKind) (storage.ResourceStore, error) {
+		switch gvk.Kind {
+		case "Version":
+			return versionStore, nil
+		case "Channel":
+			return channelStore, nil
+		}
+		return memory.NewMemoryStore(resourceType, scheme, gvk), nil
+	}
+	stores, err := authz.NewStores(storageFactory, privateScheme)
+	if err != nil {
+		t.Fatalf("create authorization stores: %v", err)
+	}
+	authorizer, err := authz.NewAuthorizer(context.Background(), stores, logger)
+	if err != nil {
+		t.Fatalf("create authorizer: %v", err)
 	}
 
 	server, err := apiserver.New(apiserver.Options{
@@ -84,19 +103,11 @@ func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
 			Resources: publicResources,
 			Middleware: []func(http.Handler) http.Handler{
 				authn.Middleware(authn.Config{}),
-				authz.Middleware(nil, logger, publicResources),
+				authz.Middleware(authorizer, logger, publicResources),
 			},
 		},
-		StorageFactory: func(resourceType string, scheme *runtime.Scheme, gvk runtimeschema.GroupVersionKind) (storage.ResourceStore, error) {
-			switch gvk.Kind {
-			case "Version":
-				return versionStore, nil
-			case "Channel":
-				return channelStore, nil
-			}
-			return memory.NewMemoryStore(resourceType, scheme, gvk), nil
-		},
-		Logger: logger,
+		StorageFactory: storageFactory,
+		Logger:         logger,
 	})
 	if err != nil {
 		t.Fatalf("create API server: %v", err)

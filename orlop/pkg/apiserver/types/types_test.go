@@ -49,15 +49,3 @@ func TestVerbAllowed_SingleVerb(t *testing.T) {
 		t.Error("VerbAllowed(\"get\") = true; want false")
 	}
 }
-
-func TestAuthorizationExemptVerbAllowed(t *testing.T) {
-	ri := ResourceInfo{AuthorizationExemptVerbs: []string{"get", "list"}}
-	for _, verb := range []string{"get", "list"} {
-		if !ri.AuthorizationExemptVerbAllowed(verb) {
-			t.Errorf("AuthorizationExemptVerbAllowed(%q) = false; want true", verb)
-		}
-	}
-	if ri.AuthorizationExemptVerbAllowed("watch") {
-		t.Error("AuthorizationExemptVerbAllowed(\"watch\") = true; want false")
-	}
-}
