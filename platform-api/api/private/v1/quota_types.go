@@ -134,6 +134,51 @@ type QuotaResourceStatus struct {
 // QuotaRequest objects are immutable after creation. Approved requests cannot
 // be deleted via the public API, preserving them as an immutable audit record.
 //
+// Lifecycle (Approved condition / reason):
+//
+//	user creates QuotaRequest
+//	         │
+//	         ▼
+//	   ┌──────────────┐   newer request          ┌──────────────────────┐
+//	   │   Pending    │──for same resource──────► │      Superseded      │
+//	   │ (no conditions│                          │ Approved=Unknown     │
+//	   │   set yet)   │                          │ reason=Superseded    │
+//	   └──────┬───────┘                          │ Superseded=True      │
+//	          │                                  │ (deletable)          │
+//	          │ requestedLimit                   └──────────────────────┘
+//	          │ ≤ currentLimit
+//	          ├─────────────────────────────────► ┌──────────────────────┐
+//	          │                                  │    NotIncreasing     │
+//	          │                                  │ Approved=Unknown     │
+//	          │                                  │ reason=NotIncreasing │
+//	          │                                  │ (deletable)          │
+//	          │                                  └──────────────────────┘
+//	          │ requestedLimit
+//	          │ ≤ autoApproveThreshold
+//	          │ and > currentLimit
+//	          ├─────────────────────────────────► ┌──────────────────────┐
+//	          │                                  │    AutoApproved      │
+//	          │                                  │ Approved=True        │
+//	          │                                  │ reason=AutoApproved  │
+//	          │                                  │ (not deletable)      │
+//	          │                                  └──────────────────────┘
+//	          │ operator approves
+//	          │ (private API)
+//	          ├─────────────────────────────────► ┌──────────────────────┐
+//	          │                                  │  ManuallyApproved    │
+//	          │                                  │ Approved=True        │
+//	          │                                  │ reason=ManuallyAppr. │
+//	          │                                  │ (not deletable)      │
+//	          │                                  └──────────────────────┘
+//	          │ operator denies
+//	          │ (private API)
+//	          └─────────────────────────────────► ┌──────────────────────┐
+//	                                             │       Denied         │
+//	                                             │ Approved=False       │
+//	                                             │ reason=Denied        │
+//	                                             │ (deletable)          │
+//	                                             └──────────────────────┘
+//
 // +orlop:public-verbs: create,get,list,delete
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced
