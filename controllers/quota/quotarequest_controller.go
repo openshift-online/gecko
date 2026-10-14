@@ -107,6 +107,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, nil
 	}
 
+	// Guard against approving a requestedLimit that does not actually raise
+	// the current effective limit. This can happen when an operator has
+	// already raised Quota.spec.limit via the private API, or when a
+	// manualLimit was applied. Approving such a request would overwrite a
+	// higher limit with a lower one, potentially cutting off users who are
+	// already within the current ceiling.
+	currentLimit := quotapkg.EffectiveLimit(&quota, qr.Spec.Resource)
+	if qr.Spec.RequestedLimit <= currentLimit {
+		r.log.Infof(ctx, "quota: QuotaRequest %s/%s requestedLimit=%d does not exceed current limit=%d for %s, leaving Pending",
+			req.Namespace, req.Name, qr.Spec.RequestedLimit, currentLimit, qr.Spec.Resource)
+		return reconcile.Result{}, nil
+	}
+
 	return r.approve(ctx, &qr, &quota)
 }
 
@@ -124,14 +137,21 @@ func (r *Reconciler) approve(ctx context.Context, qr *privatev1.QuotaRequest, qu
 	updated.Status.AutoApproved = &trueVal
 	updated.Status.DecisionNote = &note
 
+	// Raise the Quota limit before marking the request Approved. If the
+	// status write fails and the controller requeues, the request is still
+	// Pending on the next run — so the limit update is retried and applied
+	// again (idempotent: same value). The reverse order is unsafe: an
+	// Approved QuotaRequest cannot be deleted via the public API, so a
+	// failure between the status write and the limit update would leave a
+	// permanently Approved request that never actually raised the limit.
+	if err := r.updateQuotaLimit(ctx, quota, qr.Spec.Resource, approvedLimit); err != nil {
+		return reconcile.Result{}, err
+	}
+
 	if err := r.client.Status().Update(ctx, updated); err != nil {
 		return reconcile.Result{}, fmt.Errorf("quota: update QuotaRequest %s/%s status: %w", qr.Namespace, qr.Name, err)
 	}
 	r.log.Infof(ctx, "quota: auto-approved QuotaRequest %s/%s: %s=%d", qr.Namespace, qr.Name, qr.Spec.Resource, approvedLimit)
-
-	if err := r.updateQuotaLimit(ctx, quota, qr.Spec.Resource, approvedLimit); err != nil {
-		return reconcile.Result{}, err
-	}
 	return reconcile.Result{}, nil
 }
 
