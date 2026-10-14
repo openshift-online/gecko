@@ -213,9 +213,11 @@ const (
 	//         The message contains the approved limit value.
 	// False — the request was denied by an operator; reason is "Denied".
 	//         The message contains the operator's explanation.
-	// Unknown — the request is still pending evaluation; reason is "Pending"
-	//           or "Superseded" (when a newer request for the same resource
-	//           was submitted).
+	// Unknown — the request is still pending evaluation; reason is one of:
+	//           "Pending"        — awaiting controller evaluation or operator review.
+	//           "Superseded"     — a newer request for the same resource was submitted.
+	//           "NotIncreasing"  — the requestedLimit does not exceed the current
+	//                              effective limit; operator review required.
 	QuotaRequestConditionApproved = "Approved"
 
 	// QuotaRequestConditionSuperseded tracks whether the request has been
@@ -235,6 +237,13 @@ const (
 	// QuotaRequestReasonSuperseded is also used on QuotaRequestConditionApproved
 	// (Unknown) when the request has been replaced by a newer one.
 	QuotaRequestReasonSuperseded = "Superseded"
+	// QuotaRequestReasonNotIncreasing is set on QuotaRequestConditionApproved
+	// (Unknown) when the requestedLimit does not exceed the current effective
+	// limit — for example because an operator already raised Quota.spec.limit
+	// via the private API to a value at or above what was requested. The
+	// request cannot be auto-approved (doing so would overwrite the current
+	// limit with a lower or equal value) and is left for operator review.
+	QuotaRequestReasonNotIncreasing = "NotIncreasing"
 )
 
 // QuotaRequestStatus contains the current state of a QuotaRequest expressed
@@ -291,9 +300,20 @@ func (s *QuotaRequestStatus) IsSuperseded() bool {
 }
 
 // IsPending returns true when the request has not yet been decided and has not
-// been superseded.
+// been superseded or blocked by a NotIncreasing condition.
 func (s *QuotaRequestStatus) IsPending() bool {
-	return !s.IsApproved() && !s.IsSuperseded() && !s.isDenied()
+	return !s.IsApproved() && !s.IsSuperseded() && !s.isDenied() && !s.isNotIncreasing()
+}
+
+func (s *QuotaRequestStatus) isNotIncreasing() bool {
+	for _, c := range s.Conditions {
+		if c.Type == QuotaRequestConditionApproved &&
+			c.Status == metav1.ConditionUnknown &&
+			c.Reason == QuotaRequestReasonNotIncreasing {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *QuotaRequestStatus) isDenied() bool {
