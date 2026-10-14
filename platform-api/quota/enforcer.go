@@ -66,15 +66,22 @@ func NewStoreEnforcer(
 // If the quota store is unavailable the call fails closed: an internal-server
 // error is returned and the creation request is rejected. This prevents quota
 // bypass during a storage outage.
+//
+// TOCTOU note: the count read and the subsequent object create in the handler
+// are not atomic. Concurrent creation requests in the same namespace can all
+// observe current < limit and all succeed, briefly exceeding the limit. The
+// window is small at normal request rates. Closing it requires a transactional
+// increment-with-compare or a per-namespace advisory lock inside the storage
+// backend, which is deferred to a follow-up.
 func (e *StoreEnforcer) CheckQuota(ctx context.Context, namespace, resource string) error {
 	limit, err := e.effectiveLimit(ctx, namespace, resource)
 	if err != nil {
-		return fmt.Errorf("quota check failed: unable to read quota for namespace %q: %w", namespace, err)
+		return apierrors.NewInternalError(fmt.Errorf("quota check failed: unable to read quota for namespace %q: %w", namespace, err))
 	}
 
 	current, err := e.countCurrent(ctx, namespace, resource)
 	if err != nil {
-		return fmt.Errorf("quota check failed: %w", err)
+		return apierrors.NewInternalError(fmt.Errorf("quota check failed: %w", err))
 	}
 
 	if current >= limit {

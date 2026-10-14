@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-logr/logr"
@@ -34,6 +36,22 @@ func writeError(w http.ResponseWriter, code int, message string) {
 	json.NewEncoder(w).Encode(status)
 }
 
+// writeValidationError writes a validation error response. If err is a
+// *apierrors.StatusError, its ErrStatus (including Reason, Details, and
+// structured Causes) is written directly so that programmatic clients can
+// consume the structured payload without parsing the message string. Plain
+// errors fall back to writeError with the code from validationStatusCode.
+func writeValidationError(w http.ResponseWriter, err error) {
+	var se *apierrors.StatusError
+	if errors.As(err, &se) {
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(int(se.ErrStatus.Code))
+		json.NewEncoder(w).Encode(se.ErrStatus)
+		return
+	}
+	writeError(w, validationStatusCode(err), fmt.Sprintf("validation failed: %v", err))
+}
+
 // validationStatusCode maps a validation error returned by ValidateCreate or
 // ValidateDelete to the appropriate HTTP status code. It inspects the error for
 // known apimachinery StatusError codes so that domain-specific validators can
@@ -52,6 +70,9 @@ func validationStatusCode(err error) int {
 	}
 	if apierrors.IsConflict(err) {
 		return http.StatusConflict
+	}
+	if apierrors.IsInternalError(err) {
+		return http.StatusInternalServerError
 	}
 	return http.StatusBadRequest
 }
