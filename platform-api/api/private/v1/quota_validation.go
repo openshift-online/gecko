@@ -29,7 +29,7 @@ func (qr *QuotaRequest) ValidateUpdate(_ context.Context, _ runtime.Object) erro
 // Returns a Conflict (HTTP 409) status error for Approved requests so that the
 // public API handler surfaces the correct status code to callers.
 func (qr *QuotaRequest) ValidateDelete(_ context.Context) error {
-	if qr.Status.Phase == QuotaRequestPhaseApproved {
+	if qr.Status.IsApproved() {
 		return apierrors.NewConflict(
 			schema.GroupResource{Group: GroupVersion.Group, Resource: "quotarequests"},
 			qr.Name,

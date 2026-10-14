@@ -15,7 +15,7 @@ import (
 	quotapkg "github.com/openshift-online/gecko/platform-api/quota"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -152,7 +152,7 @@ func (c *fakeClient) Apply(_ context.Context, _ runtime.ApplyConfiguration, _ ..
 }
 func (c *fakeClient) SubResource(_ string) client.SubResourceClient { return nil }
 func (c *fakeClient) Scheme() *runtime.Scheme                       { return nil }
-func (c *fakeClient) RESTMapper() meta.RESTMapper                   { return nil }
+func (c *fakeClient) RESTMapper() apimeta.RESTMapper                 { return nil }
 func (c *fakeClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVersionKind, error) {
 	return schema.GroupVersionKind{}, nil
 }
@@ -374,7 +374,18 @@ func TestQRReconcile_NotFound_NoError(t *testing.T) {
 
 func TestQRReconcile_AlreadyApproved_NoAction(t *testing.T) {
 	qr := makeQR("req", "ns", "hostedclusters", 100)
-	qr.Status.Phase = privatev1.QuotaRequestPhaseApproved
+	// Mark as approved via condition so the reconciler skips it.
+	limit := int32(100)
+	trueVal := true
+	qr.Status.ApprovedLimit = &limit
+	qr.Status.AutoApproved = &trueVal
+	apimeta.SetStatusCondition(&qr.Status.Conditions, metav1.Condition{
+		Type:               privatev1.QuotaRequestConditionApproved,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             privatev1.QuotaRequestReasonAutoApproved,
+		Message:            "already approved",
+	})
 	c := newFakeClient()
 	c.store(qr)
 
@@ -403,7 +414,7 @@ func TestQRReconcile_AutoApproves_WithinThreshold(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	// QuotaRequest status should be Approved.
+	// QuotaRequest status should carry an Approved=True condition.
 	if len(c.statusUpdates) == 0 {
 		t.Fatal("expected status update for auto-approval")
 	}
@@ -411,8 +422,8 @@ func TestQRReconcile_AutoApproves_WithinThreshold(t *testing.T) {
 	if !ok {
 		t.Fatalf("status update is %T, want *QuotaRequest", c.statusUpdates[0])
 	}
-	if updated.Status.Phase != privatev1.QuotaRequestPhaseApproved {
-		t.Errorf("phase: got %s, want Approved", updated.Status.Phase)
+	if !updated.Status.IsApproved() {
+		t.Errorf("expected Approved condition True, got conditions: %v", updated.Status.Conditions)
 	}
 	if updated.Status.AutoApproved == nil || !*updated.Status.AutoApproved {
 		t.Error("expected AutoApproved=true")
@@ -479,18 +490,21 @@ func TestQRReconcile_SupersedesOlderPending(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	// One of the status updates should be the old request going to Superseded.
+	// One of the status updates should be the old request going to Superseded,
+	// another the new request going to Approved.
 	superseded := false
 	approved := false
 	for _, u := range c.statusUpdates {
 		if qr, ok := u.(*privatev1.QuotaRequest); ok {
-			switch qr.Status.Phase {
-			case privatev1.QuotaRequestPhaseSuperseded:
+			if qr.Status.IsSuperseded() {
 				superseded = true
-				if qr.Status.SupersededBy == nil || *qr.Status.SupersededBy != "new-req" {
-					t.Errorf("supersededBy: got %v, want \"new-req\"", qr.Status.SupersededBy)
+				// The Superseded condition message should name the newer request.
+				cond := findCond(qr.Status.Conditions, privatev1.QuotaRequestConditionSuperseded)
+				if cond == nil || cond.Message == "" {
+					t.Errorf("expected Superseded condition with message naming newer request")
 				}
-			case privatev1.QuotaRequestPhaseApproved:
+			}
+			if qr.Status.IsApproved() {
 				approved = true
 			}
 		}
@@ -533,10 +547,10 @@ func TestQRReconcile_OldRequestSupersedesItself(t *testing.T) {
 	superseded := false
 	for _, u := range c.statusUpdates {
 		if qr, ok := u.(*privatev1.QuotaRequest); ok {
-			if qr.Name == "old-req" && qr.Status.Phase == privatev1.QuotaRequestPhaseSuperseded {
+			if qr.Name == "old-req" && qr.Status.IsSuperseded() {
 				superseded = true
 			}
-			if qr.Name == "new-req" && qr.Status.Phase == privatev1.QuotaRequestPhaseApproved {
+			if qr.Name == "new-req" && qr.Status.IsApproved() {
 				t.Error("new request should not be approved when reconciling the old request")
 			}
 		}
@@ -628,6 +642,8 @@ func findCond(conds []metav1.Condition, condType string) *metav1.Condition {
 func fixedTimestamp() time.Time {
 	return time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 }
+
+
 
 // Compile-time check: fakeClient must implement client.Client.
 var _ client.Client = (*fakeClient)(nil)
