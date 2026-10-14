@@ -123,14 +123,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// Guard against approving a requestedLimit that does not actually raise
 	// the current effective limit. This can happen when an operator has
-	// already raised Quota.spec.limit via the private API, or when a
-	// manualLimit was applied. Approving such a request would overwrite a
-	// higher limit with a lower one, potentially cutting off users who are
-	// already within the current ceiling.
+	// already raised Quota.spec.limit via the private API to a value at or
+	// above what was requested. Approving such a request would overwrite the
+	// current limit with a lower or equal value, potentially cutting off users
+	// who are already within the current ceiling.
 	currentLimit := quotapkg.EffectiveLimit(&quota, qr.Spec.Resource)
 	if qr.Spec.RequestedLimit <= currentLimit {
-		r.log.Infof(ctx, "quota: QuotaRequest %s/%s requestedLimit=%d does not exceed current limit=%d for %s, leaving Pending",
-			req.Namespace, req.Name, qr.Spec.RequestedLimit, currentLimit, qr.Spec.Resource)
+		msg := fmt.Sprintf(
+			"requestedLimit %d does not exceed the current effective limit %d for %s; operator review required",
+			qr.Spec.RequestedLimit, currentLimit, qr.Spec.Resource,
+		)
+		r.log.Infof(ctx, "quota: QuotaRequest %s/%s %s", req.Namespace, req.Name, msg)
+		updated := qr.DeepCopy()
+		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+			Type:               privatev1.QuotaRequestConditionApproved,
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: updated.Generation,
+			LastTransitionTime: metav1.NewTime(time.Now().UTC()),
+			Reason:             privatev1.QuotaRequestReasonNotIncreasing,
+			Message:            msg,
+		})
+		if err := r.client.Status().Update(ctx, updated); err != nil {
+			return reconcile.Result{}, fmt.Errorf("quota: update QuotaRequest %s/%s status: %w", qr.Namespace, qr.Name, err)
+		}
 		return reconcile.Result{}, nil
 	}
 

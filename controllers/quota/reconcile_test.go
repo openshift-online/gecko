@@ -596,6 +596,79 @@ func TestQRReconcile_NoThreshold_LeavePending(t *testing.T) {
 	}
 }
 
+func TestQRReconcile_RequestedLimitNotIncreasing_SetsNotIncreasingCondition(t *testing.T) {
+	// requestedLimit (80) is below the current effective limit (100) — the
+	// controller must not approve (that would lower the limit) and must record
+	// a NotIncreasing condition so the user understands why.
+	qr := makeQR("req", "ns", "hostedclusters", 80)
+	quota := makeQuotaWithThreshold("ns", "hostedclusters", 100, 150) // limit=100, threshold=150
+	c := newFakeClient()
+	c.store(qr)
+	c.store(quota)
+	c.lists["QuotaRequest"] = []client.Object{qr}
+
+	r := NewReconciler(testLog(t), c)
+	_, err := r.Reconcile(context.Background(), quotaReq("ns", "req"))
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// Quota limit must not have changed.
+	if len(c.updates) != 0 {
+		t.Errorf("expected no Quota spec update, got %d", len(c.updates))
+	}
+
+	// One status update: the QuotaRequest must carry Approved=Unknown/NotIncreasing.
+	if len(c.statusUpdates) != 1 {
+		t.Fatalf("expected 1 status update, got %d", len(c.statusUpdates))
+	}
+	updated, ok := c.statusUpdates[0].(*privatev1.QuotaRequest)
+	if !ok {
+		t.Fatalf("status update is %T, want *QuotaRequest", c.statusUpdates[0])
+	}
+	cond := findCond(updated.Status.Conditions, privatev1.QuotaRequestConditionApproved)
+	if cond == nil {
+		t.Fatal("Approved condition not set")
+	}
+	if cond.Status != metav1.ConditionUnknown {
+		t.Errorf("Approved condition status: got %s, want Unknown", cond.Status)
+	}
+	if cond.Reason != privatev1.QuotaRequestReasonNotIncreasing {
+		t.Errorf("Approved condition reason: got %s, want NotIncreasing", cond.Reason)
+	}
+	if updated.Status.IsApproved() {
+		t.Error("request must not be approved")
+	}
+}
+
+func TestQRReconcile_NotIncreasingIsNotReprocessed(t *testing.T) {
+	// A QuotaRequest that already has the NotIncreasing condition set must be
+	// skipped by the reconciler (IsPending() returns false), so it is not
+	// re-evaluated on every event.
+	qr := makeQR("req", "ns", "hostedclusters", 80)
+	apimeta.SetStatusCondition(&qr.Status.Conditions, metav1.Condition{
+		Type:               privatev1.QuotaRequestConditionApproved,
+		Status:             metav1.ConditionUnknown,
+		LastTransitionTime: metav1.Now(),
+		Reason:             privatev1.QuotaRequestReasonNotIncreasing,
+		Message:            "already recorded",
+	})
+	quota := makeQuotaWithThreshold("ns", "hostedclusters", 100, 150)
+	c := newFakeClient()
+	c.store(qr)
+	c.store(quota)
+	c.lists["QuotaRequest"] = []client.Object{qr}
+
+	r := NewReconciler(testLog(t), c)
+	_, err := r.Reconcile(context.Background(), quotaReq("ns", "req"))
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(c.statusUpdates) != 0 {
+		t.Errorf("expected no status update for already-NotIncreasing request, got %d", len(c.statusUpdates))
+	}
+}
+
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 func clusterObj(ns, name string) client.Object {
