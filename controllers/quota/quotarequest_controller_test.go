@@ -9,13 +9,14 @@ import (
 
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 // pendingRequest builds a QuotaRequest in Pending state with the given name,
-// resource, and creation time.
+// resource, and creation time. A request with no conditions is Pending.
 func pendingRequest(name, resource string, createdAt time.Time) privatev1.QuotaRequest {
 	qr := privatev1.QuotaRequest{}
 	qr.Name = name
@@ -24,14 +25,23 @@ func pendingRequest(name, resource string, createdAt time.Time) privatev1.QuotaR
 	qr.Spec.Resource = resource
 	qr.Spec.RequestedLimit = 100
 	qr.Spec.Reason = "test"
-	qr.Status.Phase = privatev1.QuotaRequestPhasePending
 	return qr
 }
 
 // approvedRequest builds a QuotaRequest that is already Approved.
 func approvedRequest(name, resource string, createdAt time.Time) privatev1.QuotaRequest {
 	qr := pendingRequest(name, resource, createdAt)
-	qr.Status.Phase = privatev1.QuotaRequestPhaseApproved
+	limit := int32(100)
+	trueVal := true
+	qr.Status.ApprovedLimit = &limit
+	qr.Status.AutoApproved = &trueVal
+	meta.SetStatusCondition(&qr.Status.Conditions, metav1.Condition{
+		Type:               privatev1.QuotaRequestConditionApproved,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.NewTime(createdAt),
+		Reason:             privatev1.QuotaRequestReasonAutoApproved,
+		Message:            "auto-approved",
+	})
 	return qr
 }
 
@@ -83,9 +93,9 @@ func TestPendingForResource_ExcludesNonPending(t *testing.T) {
 	assert.Equal(t, "a", result[0].Name)
 }
 
-func TestPendingForResource_TreatsEmptyPhaseAsPending(t *testing.T) {
+func TestPendingForResource_NoConditionsIsPending(t *testing.T) {
+	// A newly-created QuotaRequest with no conditions is Pending.
 	qr := pendingRequest("a", "hostedclusters", t0)
-	qr.Status.Phase = "" // zero value = Pending
 	result := PendingForResource([]privatev1.QuotaRequest{qr}, "hostedclusters")
 	require.Len(t, result, 1)
 }

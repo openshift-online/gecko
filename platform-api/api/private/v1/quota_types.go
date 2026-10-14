@@ -149,7 +149,7 @@ type QuotaRequest struct {
 	// +required
 	Spec QuotaRequestSpec `json:"spec"`
 
-	// status reflects the current phase of the request.
+	// status reflects the current state of the request.
 	// +orlop:public
 	// +optional
 	Status QuotaRequestStatus `json:"status,omitempty"`
@@ -205,64 +205,104 @@ type QuotaRequestSpec struct {
 	NeededBy *metav1.Time `json:"neededBy,omitempty"`
 }
 
-// QuotaRequestPhase represents the lifecycle phase of a QuotaRequest.
-type QuotaRequestPhase string
-
 const (
-	// QuotaRequestPhasePending means the request has been submitted and is
-	// awaiting evaluation or operator review.
-	QuotaRequestPhasePending QuotaRequestPhase = "Pending"
-	// QuotaRequestPhaseApproved means the requested limit increase has been
-	// granted, either automatically by the controller or by an operator.
-	QuotaRequestPhaseApproved QuotaRequestPhase = "Approved"
-	// QuotaRequestPhaseDenied means an operator has reviewed and rejected the
-	// request.
-	QuotaRequestPhaseDenied QuotaRequestPhase = "Denied"
-	// QuotaRequestPhaseSuperseded means a newer QuotaRequest targeting the same
-	// resource was submitted in the same namespace. The newer request takes
-	// precedence; this one will no longer be evaluated. Superseded requests may
-	// be deleted via the public API.
-	QuotaRequestPhaseSuperseded QuotaRequestPhase = "Superseded"
+	// QuotaRequestConditionApproved tracks whether the request has been approved.
+	//
+	// True  — the requested limit increase was granted; reason is either
+	//         "AutoApproved" (controller) or "ManuallyApproved" (operator).
+	//         The message contains the approved limit value.
+	// False — the request was denied by an operator; reason is "Denied".
+	//         The message contains the operator's explanation.
+	// Unknown — the request is still pending evaluation; reason is "Pending"
+	//           or "Superseded" (when a newer request for the same resource
+	//           was submitted).
+	QuotaRequestConditionApproved = "Approved"
+
+	// QuotaRequestConditionSuperseded tracks whether the request has been
+	// replaced by a newer one for the same resource.
+	//
+	// True  — a newer QuotaRequest for the same resource exists in the
+	//         namespace. The message names the superseding request.
+	//         Reason is "Superseded". The request may be deleted.
+	// False — the request is not superseded (initial state).
+	QuotaRequestConditionSuperseded = "Superseded"
+
+	// Reason values for QuotaRequestConditionApproved.
+	QuotaRequestReasonPending          = "Pending"
+	QuotaRequestReasonAutoApproved     = "AutoApproved"
+	QuotaRequestReasonManuallyApproved = "ManuallyApproved"
+	QuotaRequestReasonDenied           = "Denied"
+	// QuotaRequestReasonSuperseded is also used on QuotaRequestConditionApproved
+	// (Unknown) when the request has been replaced by a newer one.
+	QuotaRequestReasonSuperseded = "Superseded"
 )
 
-// QuotaRequestStatus contains the current phase and decision details for a
-// QuotaRequest.
+// QuotaRequestStatus contains the current state of a QuotaRequest expressed
+// as standard Kubernetes conditions.
 type QuotaRequestStatus struct {
-	// phase is the current lifecycle phase of the request.
+	// conditions represents the latest observed state of the QuotaRequest.
+	//
+	// Condition types:
+	//   Approved   — True when granted, False when denied, Unknown when pending
+	//                or superseded.
+	//   Superseded — True when a newer QuotaRequest for the same resource
+	//                exists in the namespace.
+	//
 	// +orlop:public
 	// +optional
-	// +kubebuilder:validation:Enum=Pending;Approved;Denied;Superseded
-	Phase QuotaRequestPhase `json:"phase,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// approvedLimit is the limit value that was granted. Set only when phase is Approved.
+	// approvedLimit is the limit value that was granted.
+	// Set only when the Approved condition is True.
 	// +orlop:public
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	ApprovedLimit *int32 `json:"approvedLimit,omitempty"`
 
-	// decidedAt is the time at which the request was approved or denied.
-	// +orlop:public
-	// +optional
-	DecidedAt *metav1.Time `json:"decidedAt,omitempty"`
-
-	// decisionNote is a human-readable explanation of the approval or denial decision.
-	// +orlop:public
-	// +optional
-	// +kubebuilder:validation:MaxLength=1024
-	DecisionNote *string `json:"decisionNote,omitempty"`
-
-	// supersededBy is the name of the newer QuotaRequest that superseded this
-	// one. Set only when phase is Superseded.
-	// +orlop:public
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	SupersededBy *string `json:"supersededBy,omitempty"`
-
 	// autoApproved indicates whether this request was automatically approved by
-	// the controller (true) or by an operator (false). This field is internal
-	// and not exposed on the public API.
+	// the controller (true) or by an operator (false). Private API only.
 	// +optional
 	AutoApproved *bool `json:"autoApproved,omitempty"`
+}
+
+// IsApproved returns true when the QuotaRequest has been granted.
+func (s *QuotaRequestStatus) IsApproved() bool {
+	for _, c := range s.Conditions {
+		if c.Type == QuotaRequestConditionApproved {
+			return c.Status == metav1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// IsSuperseded returns true when the QuotaRequest has been replaced by a
+// newer request for the same resource.
+func (s *QuotaRequestStatus) IsSuperseded() bool {
+	for _, c := range s.Conditions {
+		if c.Type == QuotaRequestConditionSuperseded {
+			return c.Status == metav1.ConditionTrue
+		}
+	}
+	return false
+}
+
+// IsPending returns true when the request has not yet been decided and has not
+// been superseded.
+func (s *QuotaRequestStatus) IsPending() bool {
+	return !s.IsApproved() && !s.IsSuperseded() && !s.isDenied()
+}
+
+func (s *QuotaRequestStatus) isDenied() bool {
+	for _, c := range s.Conditions {
+		if c.Type == QuotaRequestConditionApproved && c.Status == metav1.ConditionFalse {
+			return true
+		}
+	}
+	return false
 }
 
 func init() {

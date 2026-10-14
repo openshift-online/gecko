@@ -132,7 +132,7 @@ type QuotaRequest struct {
 	// +required
 	Spec QuotaRequestSpec `json:"spec"`
 
-	// status reflects the current phase of the request.
+	// status reflects the current state of the request.
 
 	// +optional
 	Status QuotaRequestStatus `json:"status,omitempty"`
@@ -188,41 +188,31 @@ type QuotaRequestSpec struct {
 	NeededBy *metav1.Time `json:"neededBy,omitempty"`
 }
 
-// QuotaRequestPhase represents the lifecycle phase of a QuotaRequest.
-type QuotaRequestPhase string
-
-// QuotaRequestStatus contains the current phase and decision details for a
-// QuotaRequest.
+// QuotaRequestStatus contains the current state of a QuotaRequest expressed
+// as standard Kubernetes conditions.
 type QuotaRequestStatus struct {
-	// phase is the current lifecycle phase of the request.
+	// conditions represents the latest observed state of the QuotaRequest.
+	//
+	// Condition types:
+	//   Approved   — True when granted, False when denied, Unknown when pending
+	//                or superseded.
+	//   Superseded — True when a newer QuotaRequest for the same resource
+	//                exists in the namespace.
+	//
 
 	// +optional
-	// +kubebuilder:validation:Enum=Pending;Approved;Denied;Superseded
-	Phase QuotaRequestPhase `json:"phase,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	// +patchStrategy=merge
+	// +patchMergeKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// approvedLimit is the limit value that was granted. Set only when phase is Approved.
+	// approvedLimit is the limit value that was granted.
+	// Set only when the Approved condition is True.
 
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	ApprovedLimit *int32 `json:"approvedLimit,omitempty"`
-
-	// decidedAt is the time at which the request was approved or denied.
-
-	// +optional
-	DecidedAt *metav1.Time `json:"decidedAt,omitempty"`
-
-	// decisionNote is a human-readable explanation of the approval or denial decision.
-
-	// +optional
-	// +kubebuilder:validation:MaxLength=1024
-	DecisionNote *string `json:"decisionNote,omitempty"`
-
-	// supersededBy is the name of the newer QuotaRequest that superseded this
-	// one. Set only when phase is Superseded.
-
-	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	SupersededBy *string `json:"supersededBy,omitempty"`
 }
 
 func init() {

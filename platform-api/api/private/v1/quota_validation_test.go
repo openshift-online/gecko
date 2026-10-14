@@ -6,29 +6,71 @@ import (
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // errQuotaExceeded is a test-only sentinel error returned by quota hook stubs.
 var errQuotaExceeded = errors.New("quota exceeded")
 
+// ─── condition helpers (test-only) ───────────────────────────────────────────
+
+func setApproved(s *QuotaRequestStatus, limit int32, auto bool) {
+	s.ApprovedLimit = &limit
+	s.AutoApproved = &auto
+	meta.SetStatusCondition(&s.Conditions, metav1.Condition{
+		Type:               QuotaRequestConditionApproved,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             QuotaRequestReasonAutoApproved,
+		Message:            "auto-approved",
+	})
+}
+
+func setDenied(s *QuotaRequestStatus, msg string) {
+	meta.SetStatusCondition(&s.Conditions, metav1.Condition{
+		Type:               QuotaRequestConditionApproved,
+		Status:             metav1.ConditionFalse,
+		LastTransitionTime: metav1.Now(),
+		Reason:             QuotaRequestReasonDenied,
+		Message:            msg,
+	})
+}
+
+func setSuperseded(s *QuotaRequestStatus, newerName string) {
+	meta.SetStatusCondition(&s.Conditions, metav1.Condition{
+		Type:               QuotaRequestConditionSuperseded,
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+		Reason:             QuotaRequestReasonSuperseded,
+		Message:            "superseded by " + newerName,
+	})
+	meta.SetStatusCondition(&s.Conditions, metav1.Condition{
+		Type:               QuotaRequestConditionApproved,
+		Status:             metav1.ConditionUnknown,
+		LastTransitionTime: metav1.Now(),
+		Reason:             QuotaRequestReasonSuperseded,
+		Message:            "superseded by " + newerName,
+	})
+}
+
 // ─── QuotaRequest.ValidateDelete ─────────────────────────────────────────────
 
-func TestQuotaRequestValidateDelete_ApprovedIsRejected(t *testing.T) {
+func approvedQR() *QuotaRequest {
 	qr := &QuotaRequest{}
 	qr.Name = "req-1"
-	qr.Status.Phase = QuotaRequestPhaseApproved
+	setApproved(&qr.Status, 100, true)
+	return qr
+}
 
-	if err := qr.ValidateDelete(context.Background()); err == nil {
+func TestQuotaRequestValidateDelete_ApprovedIsRejected(t *testing.T) {
+	if err := approvedQR().ValidateDelete(context.Background()); err == nil {
 		t.Error("expected error deleting Approved QuotaRequest, got nil")
 	}
 }
 
 func TestQuotaRequestValidateDelete_ApprovedReturnsConflict(t *testing.T) {
-	qr := &QuotaRequest{}
-	qr.Name = "req-1"
-	qr.Status.Phase = QuotaRequestPhaseApproved
-
-	err := qr.ValidateDelete(context.Background())
+	err := approvedQR().ValidateDelete(context.Background())
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -38,9 +80,8 @@ func TestQuotaRequestValidateDelete_ApprovedReturnsConflict(t *testing.T) {
 }
 
 func TestQuotaRequestValidateDelete_PendingIsAllowed(t *testing.T) {
+	// No conditions set → IsPending() == true
 	qr := &QuotaRequest{}
-	qr.Status.Phase = QuotaRequestPhasePending
-
 	if err := qr.ValidateDelete(context.Background()); err != nil {
 		t.Errorf("expected no error deleting Pending QuotaRequest, got: %v", err)
 	}
@@ -48,8 +89,7 @@ func TestQuotaRequestValidateDelete_PendingIsAllowed(t *testing.T) {
 
 func TestQuotaRequestValidateDelete_DeniedIsAllowed(t *testing.T) {
 	qr := &QuotaRequest{}
-	qr.Status.Phase = QuotaRequestPhaseDenied
-
+	setDenied(&qr.Status, "not approved")
 	if err := qr.ValidateDelete(context.Background()); err != nil {
 		t.Errorf("expected no error deleting Denied QuotaRequest, got: %v", err)
 	}
@@ -57,21 +97,17 @@ func TestQuotaRequestValidateDelete_DeniedIsAllowed(t *testing.T) {
 
 func TestQuotaRequestValidateDelete_SupersededIsAllowed(t *testing.T) {
 	qr := &QuotaRequest{}
-	qr.Status.Phase = QuotaRequestPhaseSuperseded
-
+	setSuperseded(&qr.Status, "newer-req")
 	if err := qr.ValidateDelete(context.Background()); err != nil {
 		t.Errorf("expected no error deleting Superseded QuotaRequest, got: %v", err)
 	}
 }
 
-func TestQuotaRequestValidateDelete_EmptyPhaseIsAllowed(t *testing.T) {
-	// A newly-created QuotaRequest may have an empty phase before the
-	// controller sets it to Pending.
+func TestQuotaRequestValidateDelete_NewRequestIsAllowed(t *testing.T) {
+	// A newly-created QuotaRequest with no conditions is Pending and deletable.
 	qr := &QuotaRequest{}
-	qr.Status.Phase = ""
-
 	if err := qr.ValidateDelete(context.Background()); err != nil {
-		t.Errorf("expected no error deleting QuotaRequest with empty phase, got: %v", err)
+		t.Errorf("expected no error deleting new QuotaRequest with no conditions, got: %v", err)
 	}
 }
 

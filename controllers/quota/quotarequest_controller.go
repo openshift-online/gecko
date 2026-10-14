@@ -1,7 +1,7 @@
 // Package quota implements the QuotaRequest controller.
 // The controller watches QuotaRequest objects and auto-approves those whose
 // requestedLimit falls within the namespace's autoApproveThreshold. Requests
-// that exceed the threshold are left in Pending phase for operator review.
+// that exceed the threshold are left Pending for operator review.
 // When multiple Pending requests target the same resource, all but the newest
 // (by creationTimestamp, tie-broken by name) are transitioned to Superseded.
 package quota
@@ -17,6 +17,7 @@ import (
 	quotapkg "github.com/openshift-online/gecko/platform-api/quota"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,8 +48,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("quota: get QuotaRequest %s/%s: %w", req.Namespace, req.Name, err)
 	}
 
-	// Only process Pending requests.
-	if qr.Status.Phase != "" && qr.Status.Phase != privatev1.QuotaRequestPhasePending {
+	// Only process Pending requests — skip those already decided or superseded.
+	if !qr.Status.IsPending() {
 		return reconcile.Result{}, nil
 	}
 
@@ -64,12 +65,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	// Supersede all stale requests.
 	now := metav1.NewTime(time.Now().UTC())
 	for i := range toSupersede {
-		note := SupersedeNote(newestName)
 		updated := toSupersede[i].DeepCopy()
-		updated.Status.Phase = privatev1.QuotaRequestPhaseSuperseded
-		updated.Status.SupersededBy = &newestName
-		updated.Status.DecidedAt = &now
-		updated.Status.DecisionNote = &note
+		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+			Type:               privatev1.QuotaRequestConditionSuperseded,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: updated.Generation,
+			LastTransitionTime: now,
+			Reason:             privatev1.QuotaRequestReasonSuperseded,
+			Message:            SupersedeNote(newestName),
+		})
+		// Also set Approved=Unknown/Superseded so clients know the request
+		// will not be evaluated further.
+		meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+			Type:               privatev1.QuotaRequestConditionApproved,
+			Status:             metav1.ConditionUnknown,
+			ObservedGeneration: updated.Generation,
+			LastTransitionTime: now,
+			Reason:             privatev1.QuotaRequestReasonSuperseded,
+			Message:            SupersedeNote(newestName),
+		})
 		if err := r.client.Status().Update(ctx, updated); err != nil {
 			return reconcile.Result{}, fmt.Errorf("quota: supersede QuotaRequest %s/%s: %w",
 				toSupersede[i].Namespace, toSupersede[i].Name, err)
@@ -123,19 +137,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	return r.approve(ctx, &qr, &quota)
 }
 
-// approve patches the QuotaRequest to Approved and raises the Quota limit.
+// approve raises the Quota limit and marks the QuotaRequest Approved.
 func (r *Reconciler) approve(ctx context.Context, qr *privatev1.QuotaRequest, quota *privatev1.Quota) (reconcile.Result, error) {
 	now := metav1.NewTime(time.Now().UTC())
 	trueVal := true
 	approvedLimit := qr.Spec.RequestedLimit
-	note := ApproveNote(approvedLimit)
 
 	updated := qr.DeepCopy()
-	updated.Status.Phase = privatev1.QuotaRequestPhaseApproved
 	updated.Status.ApprovedLimit = &approvedLimit
-	updated.Status.DecidedAt = &now
 	updated.Status.AutoApproved = &trueVal
-	updated.Status.DecisionNote = &note
+	meta.SetStatusCondition(&updated.Status.Conditions, metav1.Condition{
+		Type:               privatev1.QuotaRequestConditionApproved,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: updated.Generation,
+		LastTransitionTime: now,
+		Reason:             privatev1.QuotaRequestReasonAutoApproved,
+		Message:            ApproveNote(approvedLimit),
+	})
 
 	// Raise the Quota limit before marking the request Approved. If the
 	// status write fails and the controller requeues, the request is still
@@ -186,8 +204,7 @@ func (r *Reconciler) updateQuotaLimit(ctx context.Context, quota *privatev1.Quot
 func PendingForResource(all []privatev1.QuotaRequest, resource string) []privatev1.QuotaRequest {
 	var out []privatev1.QuotaRequest
 	for _, qr := range all {
-		if qr.Spec.Resource == resource &&
-			(qr.Status.Phase == "" || qr.Status.Phase == privatev1.QuotaRequestPhasePending) {
+		if qr.Spec.Resource == resource && qr.Status.IsPending() {
 			out = append(out, qr)
 		}
 	}
