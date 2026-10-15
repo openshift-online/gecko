@@ -9,3 +9,8 @@ reviews:
     # Run through make lint, which builds the required Go plugin.
     golangci-lint:
       enabled: false
+  path_instructions:
+  - path: "platform-api/api/**"
+    instructions: |
+      Ensure API changes follow api-conventions as layed out in the API-CONVENTIONS.md file in the platform-api folder.
+      Post all violations of the api-conventions in the review.
