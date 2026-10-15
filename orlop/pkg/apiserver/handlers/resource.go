@@ -171,7 +171,7 @@ func (h *ResourceHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	if v, ok := obj.(types.CustomValidator); ok {
 		if err := v.ValidateCreate(r.Context()); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("validation failed: %v", err))
+			writeError(w, validationStatusCode(err), fmt.Sprintf("validation failed: %v", err))
 			return
 		}
 	}
@@ -697,7 +697,7 @@ func (h *ResourceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	if v, ok := existing.(types.CustomValidator); ok {
 		if err := v.ValidateDelete(r.Context()); err != nil {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("validation failed: %v", err))
+			writeError(w, validationStatusCode(err), fmt.Sprintf("validation failed: %v", err))
 			return
 		}
 	}

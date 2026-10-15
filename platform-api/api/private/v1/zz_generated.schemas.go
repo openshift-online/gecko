@@ -29,6 +29,14 @@ var (
 	//go:embed .schemas/platformrole_schema.yaml
 	PlatformRoleSchemaYAML string
 
+	// QuotaRequestSchemaYAML contains the OpenAPI v3 schema for QuotaRequest.
+	//go:embed .schemas/quotarequest_schema.yaml
+	QuotaRequestSchemaYAML string
+
+	// QuotaSchemaYAML contains the OpenAPI v3 schema for Quota.
+	//go:embed .schemas/quota_schema.yaml
+	QuotaSchemaYAML string
+
 	// RoleBindingSchemaYAML contains the OpenAPI v3 schema for RoleBinding.
 	//go:embed .schemas/rolebinding_schema.yaml
 	RoleBindingSchemaYAML string
@@ -126,6 +134,28 @@ var PlatformRoleResourceInfo = types.ResourceInfo{
 	SchemaYAML: PlatformRoleSchemaYAML,
 }
 
+// QuotaRequestResourceInfo describes the QuotaRequest resource type.
+var QuotaRequestResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("QuotaRequest"),
+	Plural:     "quotarequests",
+	Singular:   "quotarequest",
+	Namespaced: true,
+	SchemaYAML: QuotaRequestSchemaYAML,
+	// Generated from // +orlop:public-verbs annotation.
+	Verbs: []string{"create", "get", "list", "delete"},
+}
+
+// QuotaResourceInfo describes the Quota resource type.
+var QuotaResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("Quota"),
+	Plural:     "quotas",
+	Singular:   "quota",
+	Namespaced: true,
+	SchemaYAML: QuotaSchemaYAML,
+	// Generated from // +orlop:public-verbs annotation.
+	Verbs: []string{"list", "get"},
+}
+
 // RoleBindingResourceInfo describes the RoleBinding resource type.
 var RoleBindingResourceInfo = types.ResourceInfo{
 	GVK:        GroupVersion.WithKind("RoleBinding"),
@@ -166,6 +196,8 @@ func GetResourceInfos() []types.ResourceInfo {
 		ControlPlaneUpgradePolicyResourceInfo,
 		NodePoolResourceInfo,
 		PlatformRoleResourceInfo,
+		QuotaRequestResourceInfo,
+		QuotaResourceInfo,
 		RoleBindingResourceInfo,
 		RoleResourceInfo,
 		VersionResourceInfo,
