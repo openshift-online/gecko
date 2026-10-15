@@ -168,6 +168,8 @@ properties:
             - message: serviceNetwork is immutable and cannot be modified once set.
               rule: self == oldSelf
         type: object
+      newField:
+        type: string
       platform:
         description: |-
           platform specifies the underlying infrastructure provider for the cluster
@@ -534,6 +536,7 @@ properties:
           rule: oldSelf == "" || self == oldSelf
     required:
     - networking
+    - newField
     - platform
     - release
     type: object

@@ -41,6 +41,9 @@ type ClusterList struct {
 
 // ClusterSpec defines the Cluster behavior.
 type ClusterSpec struct {
+	// +orlop:public
+	NewField string `json:"newField"`
+
 	// SafeName is a private, immutable, DNS-safe name used for downstream HyperShift resources.
 	// +optional
 	// +kubebuilder:validation:MaxLength=17

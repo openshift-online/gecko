@@ -41,6 +41,7 @@ type ClusterList struct {
 
 // ClusterSpec defines the Cluster behavior.
 type ClusterSpec struct {
+	NewField string `json:"newField"`
 
 	// infraID is a globally unique identifier for the cluster.
 	// It must consist of lowercase alphanumeric characters and hyphens ('-') only, and start and end with an alphanumeric character.

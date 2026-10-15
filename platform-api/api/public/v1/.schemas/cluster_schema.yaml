@@ -122,6 +122,8 @@ properties:
             - message: serviceNetwork is immutable and cannot be modified once set.
               rule: self == oldSelf
         type: object
+      newField:
+        type: string
       platform:
         description: ClusterPlatformSpec defines the behavior of the infrastructure
           provider.
@@ -325,6 +327,7 @@ properties:
         type: object
     required:
     - networking
+    - newField
     - platform
     - release
     type: object
