@@ -33,7 +33,7 @@ require (
 	cloud.google.com/go/longrunning v1.3.0 // indirect
 	cloud.google.com/go/monitoring v1.31.0 // indirect
 	cloud.google.com/go/spanner v1.96.1 // indirect
-	connectrpc.com/connect v1.21.0 // indirect
+	connectrpc.com/connect v1.21.1 // indirect
 	connectrpc.com/otelconnect v0.10.0 // indirect
 	github.com/GoogleCloudPlatform/grpc-gcp-go/grpcgcp v1.6.0 // indirect
 	github.com/NYTimes/gziphandler v1.1.1 // indirect
