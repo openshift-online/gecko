@@ -34,6 +34,10 @@ const (
 	GetControlPlaneUpgradePolicy    Action = "GetControlPlaneUpgradePolicy"
 	UpdateControlPlaneUpgradePolicy Action = "UpdateControlPlaneUpgradePolicy"
 	DeleteControlPlaneUpgradePolicy Action = "DeleteControlPlaneUpgradePolicy"
+	CreateNodePoolUpgradeRequest    Action = "CreateNodePoolUpgradeRequest"
+	ListNodePoolUpgradeRequests     Action = "ListNodePoolUpgradeRequests"
+	GetNodePoolUpgradeRequest       Action = "GetNodePoolUpgradeRequest"
+	DeleteNodePoolUpgradeRequest    Action = "DeleteNodePoolUpgradeRequest"
 )
 
 var permissionActions = map[string]Action{
@@ -63,6 +67,10 @@ var permissionActions = map[string]Action{
 	"controlplaneupgradepolicy.get":    GetControlPlaneUpgradePolicy,
 	"controlplaneupgradepolicy.update": UpdateControlPlaneUpgradePolicy,
 	"controlplaneupgradepolicy.delete": DeleteControlPlaneUpgradePolicy,
+	"nodepoolupgraderequest.create":    CreateNodePoolUpgradeRequest,
+	"nodepoolupgraderequest.list":      ListNodePoolUpgradeRequests,
+	"nodepoolupgraderequest.get":       GetNodePoolUpgradeRequest,
+	"nodepoolupgraderequest.delete":    DeleteNodePoolUpgradeRequest,
 }
 
 func actionForPermission(permission string) (Action, bool) {
@@ -113,6 +121,8 @@ func pluralToResource(plural string) string {
 		return "nodepool"
 	case "controlplaneupgradepolicies":
 		return "controlplaneupgradepolicy"
+	case "nodepoolupgraderequests":
+		return "nodepoolupgraderequest"
 	case "roles":
 		return "role"
 	case "rolebindings":

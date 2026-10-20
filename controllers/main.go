@@ -11,6 +11,7 @@ import (
 
 	cmdhc "github.com/openshift-online/gecko/controllers/cmd/hc"
 	cmdnodepool "github.com/openshift-online/gecko/controllers/cmd/nodepool"
+	cmdnodepoolupgrade "github.com/openshift-online/gecko/controllers/cmd/nodepoolupgrade"
 	cmdnodepoolvrresolution "github.com/openshift-online/gecko/controllers/cmd/nodepoolvrresolution"
 	cmdplacement "github.com/openshift-online/gecko/controllers/cmd/placement"
 	cmdversionresolution "github.com/openshift-online/gecko/controllers/cmd/versionresolution"
@@ -56,6 +57,7 @@ func main() {
 		cmdplacement.NewCommand(rf),
 		cmdhc.NewCommand(rf),
 		cmdnodepool.NewCommand(rf),
+		cmdnodepoolupgrade.NewCommand(rf),
 	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

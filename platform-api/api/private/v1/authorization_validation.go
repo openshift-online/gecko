@@ -45,6 +45,10 @@ var validAuthorizationPermissions = map[string]struct{}{
 	"controlplaneupgradepolicy.get":    {},
 	"controlplaneupgradepolicy.update": {},
 	"controlplaneupgradepolicy.delete": {},
+	"nodepoolupgraderequest.create":    {},
+	"nodepoolupgraderequest.list":      {},
+	"nodepoolupgraderequest.get":       {},
+	"nodepoolupgraderequest.delete":    {},
 }
 
 // ValidAuthorizationPermissions returns the complete set of permissions

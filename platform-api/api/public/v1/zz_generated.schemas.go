@@ -25,6 +25,10 @@ var (
 	//go:embed .schemas/nodepool_schema.yaml
 	NodePoolSchemaYAML string
 
+	// NodePoolUpgradeRequestSchemaYAML contains the OpenAPI v3 schema for NodePoolUpgradeRequest.
+	//go:embed .schemas/nodepoolupgraderequest_schema.yaml
+	NodePoolUpgradeRequestSchemaYAML string
+
 	// RoleBindingSchemaYAML contains the OpenAPI v3 schema for RoleBinding.
 	//go:embed .schemas/rolebinding_schema.yaml
 	RoleBindingSchemaYAML string
@@ -113,6 +117,17 @@ var NodePoolResourceInfo = types.ResourceInfo{
 	},
 }
 
+// NodePoolUpgradeRequestResourceInfo describes the NodePoolUpgradeRequest resource type.
+var NodePoolUpgradeRequestResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("NodePoolUpgradeRequest"),
+	Plural:     "nodepoolupgraderequests",
+	Singular:   "nodepoolupgraderequest",
+	Namespaced: true,
+	SchemaYAML: NodePoolUpgradeRequestSchemaYAML,
+	// Generated from // +orlop:public-verbs annotation.
+	Verbs: []string{"create", "get", "list", "delete"},
+}
+
 // RoleBindingResourceInfo describes the RoleBinding resource type.
 var RoleBindingResourceInfo = types.ResourceInfo{
 	GVK:        GroupVersion.WithKind("RoleBinding"),
@@ -152,6 +167,7 @@ func GetResourceInfos() []types.ResourceInfo {
 		ClusterResourceInfo,
 		ControlPlaneUpgradePolicyResourceInfo,
 		NodePoolResourceInfo,
+		NodePoolUpgradeRequestResourceInfo,
 		RoleBindingResourceInfo,
 		RoleResourceInfo,
 		VersionResourceInfo,
