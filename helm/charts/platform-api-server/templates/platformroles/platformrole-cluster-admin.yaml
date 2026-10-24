@@ -19,6 +19,10 @@ spec:
     - nodepool.get
     - nodepool.update
     - nodepool.delete
+    - nodepoolupgraderequest.create
+    - nodepoolupgraderequest.list
+    - nodepoolupgraderequest.get
+    - nodepoolupgraderequest.delete
     - controlplaneupgradepolicy.create
     - controlplaneupgradepolicy.list
     - controlplaneupgradepolicy.get

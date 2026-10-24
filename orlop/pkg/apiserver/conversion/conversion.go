@@ -42,8 +42,9 @@ const DefaultPrivatePrefix = "private.orlop.gcp.managed.openshift.io/"
 //
 // To make a new condition public, add its type string to the appropriate Kind.
 var publicConditionTypes = map[string]sets.Set[string]{
-	"Cluster":  sets.New[string]("HostedClusterAvailable"),
-	"NodePool": sets.New[string]("NodePoolAvailable", "NodePoolHealthy", "NodePoolProgressing"),
+	"Cluster":                sets.New[string]("HostedClusterAvailable"),
+	"NodePool":               sets.New[string]("NodePoolAvailable", "NodePoolHealthy", "NodePoolProgressing"),
+	"NodePoolUpgradeRequest": sets.New[string]("Scheduled", "Accepted", "Progressing", "Completed", "Failed"),
 	// Test-only resource type used in orlop tests
 	"Object": sets.New[string]("Ready", "Available"),
 }
