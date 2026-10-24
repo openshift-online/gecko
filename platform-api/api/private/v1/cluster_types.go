@@ -553,6 +553,9 @@ type PlacementResult struct {
 }
 
 // VersionResolutionResult holds the VR controller's output.
+// The result pins the release image: it is rewritten only when the requested
+// version or channel group changes, so later catalog changes never move a
+// running cluster or node pool to a different image.
 type VersionResolutionResult struct {
 	// ReleaseImage is the resolved OCP release pullspec (e.g. quay.io/openshift-release-dev/ocp-release@sha256:...).
 	// +optional
@@ -560,12 +563,13 @@ type VersionResolutionResult struct {
 	// ReleaseVersion is the resolved OCP version string (e.g. "4.16.3").
 	// +optional
 	ReleaseVersion string `json:"releaseVersion,omitempty"`
-	// CincinnatiChannel is the channel string used to query Cincinnati (e.g. "stable-4.16").
-	// Derived from ChannelGroup and the major.minor of ReleaseVersion.
+	// CincinnatiChannel is the upgrade channel advertised to the hosted cluster (e.g. "stable-4.16").
+	// Derived from ChannelGroup and the major.minor of ReleaseVersion. It is not used to resolve
+	// the release image: resolution reads the Version catalog.
 	// +optional
 	CincinnatiChannel string `json:"cincinnatiChannel,omitempty"`
 	// ChannelGroup is the raw channel group from spec.release.channelGroup (e.g. "stable", "nightly").
-	// Stored to detect channel group changes without reconstructing the Cincinnati channel string.
+	// Stored to detect channel group changes that require re-resolution.
 	// +optional
 	ChannelGroup string `json:"channelGroup,omitempty"`
 }

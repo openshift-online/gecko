@@ -1,21 +1,24 @@
 package versionresolution
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
+	"github.com/openshift-online/gecko/controllers/util/logger"
 	"github.com/openshift-online/gecko/controllers/util/setup"
 	"github.com/openshift-online/gecko/controllers/versionresolution"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // NewCommand returns the version-resolution subcommand.
 func NewCommand(rf *setup.RootFlags) *cobra.Command {
-	var cincinnatiURL, arch string
-
 	cmd := &cobra.Command{
 		Use:   "version-resolution",
 		Short: "Run the version-resolution controller",
@@ -32,12 +35,15 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("create manager: %w", err)
 			}
+			if err := mgr.GetFieldIndexer().IndexField(ctx, &privatev1.Cluster{}, versionresolution.ClusterReleaseVersionField, clusterReleaseVersion); err != nil {
+				return fmt.Errorf("index clusters by release version: %w", err)
+			}
 
-			cinClient := versionresolution.NewCincinnatiClient(cincinnatiURL, arch)
-			rec := versionresolution.NewReconciler(cinClient, log, mgr.GetClient())
+			rec := versionresolution.NewReconciler(log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&privatev1.Cluster{}).
+				Watches(&privatev1.Version{}, handler.EnqueueRequestsFromMapFunc(versionToClusters(mgr.GetClient(), log))).
 				WithOptions(rf.ControllerOpts()).
 				Complete(rec); err != nil {
 				return fmt.Errorf("setup controller: %w", err)
@@ -47,8 +53,39 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&cincinnatiURL, "cincinnati-url", "https://api.openshift.com/api/upgrades_info/v1/graph", "Cincinnati API URL")
-	cmd.Flags().StringVar(&arch, "arch", "amd64", "CPU architecture for Cincinnati query")
-
 	return cmd
+}
+
+func clusterReleaseVersion(obj ctrlclient.Object) []string {
+	cluster, ok := obj.(*privatev1.Cluster)
+	if !ok || cluster.Spec.Release.Version == "" {
+		return nil
+	}
+	return []string{cluster.Spec.Release.Version}
+}
+
+// versionToClusters enqueues every cluster requesting the release version a
+// Version event refers to, so clusters created before the catalog caught up
+// resolve as soon as their version appears.
+func versionToClusters(c ctrlclient.Client, log logger.Logger) handler.MapFunc {
+	return func(ctx context.Context, obj ctrlclient.Object) []reconcile.Request {
+		version, ok := obj.(*privatev1.Version)
+		if !ok {
+			return nil
+		}
+
+		var clusters privatev1.ClusterList
+		if err := c.List(ctx, &clusters, ctrlclient.MatchingFields{versionresolution.ClusterReleaseVersionField: version.Name}); err != nil {
+			log.Errorf(ctx, "list clusters for version %s: %v", version.Name, err)
+			return nil
+		}
+
+		requests := make([]reconcile.Request, 0, len(clusters.Items))
+		for i := range clusters.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: ctrlclient.ObjectKeyFromObject(&clusters.Items[i]),
+			})
+		}
+		return requests
+	}
 }

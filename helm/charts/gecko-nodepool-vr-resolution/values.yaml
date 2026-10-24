@@ -14,10 +14,6 @@ logLevel: info
 logFormat: json
 workers: 10
 
-cincinnati:
-  url: "https://api.openshift.com/api/upgrades_info/v1/graph"
-  arch: amd64
-
 serviceAccount:
   create: true
   annotations: {}
