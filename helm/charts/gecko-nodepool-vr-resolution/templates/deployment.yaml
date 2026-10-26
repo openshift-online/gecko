@@ -45,8 +45,6 @@ spec:
             - --log-level={{ .Values.logLevel }}
             - --log-format={{ .Values.logFormat }}
             - --workers={{ .Values.workers }}
-            - --cincinnati-url={{ .Values.cincinnati.url }}
-            - --arch={{ .Values.cincinnati.arch }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}
