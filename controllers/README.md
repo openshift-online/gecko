@@ -79,14 +79,20 @@ Reconciles `Cluster` resources. Selects an eligible management cluster and DNS b
 
 ### version-resolution
 
-Reconciles `Cluster` resources. Resolves the OCP release image for the requested version via the Cincinnati API.
+Reconciles `Cluster` resources. Resolves the requested release image from the cluster-scoped `Version` catalog populated by version-sync.
 
-- Queries the Cincinnati update graph for the matching release payload
-- Writes `Status.VersionResolution` (ReleaseVersion, ReleaseImage, CincinnatiChannel)
+- Reads the Version named after the requested release and checks its channel-group membership
+- Writes `Status.VersionResolution` (ReleaseVersion, ReleaseImage, CincinnatiChannel, ChannelGroup)
+- Pins the image once resolved for a version and channel group, even if the catalog changes or removes the release
+- Retains the existing CVO channel calculation; fleet authorization may advance that channel without changing the pinned image
+- Watches Version changes to retry pending requests immediately; periodic requeues recover missed events
+- Reports `VersionNotFoundInCatalog` or `VersionNotInChannelGroup` for unavailable releases; API and cache errors remain retryable
+
+Deploy a healthy version-sync with configured Channels and a populated catalog before promoting this change. An empty catalog leaves new or changed requests unresolved. There is no fallback for an aged-out release, including when adding a node pool to an existing cluster.
 
 ### nodepool-vr (NodePool Version Resolution)
 
-Reconciles `NodePool` resources. Same concept as version-resolution but for individual node pools.
+Reconciles `NodePool` resources using the same catalog lookup, channel membership checks, image pinning, and Version watches as version-resolution. It preserves the existing default channel group (`candidate`); clusters default to `stable`. Neither resolver queries an external release source. version-sync remains responsible for synchronizing the catalog from Cincinnati.
 
 ### hc-controller (HostedCluster Controller)
 
@@ -170,7 +176,7 @@ controllers/
   nodepool/               # NodePool controller + manifest building
   nodepoolvrresolution/   # NodePool version-resolution controller
   placement/              # Placement controller + dynamic MC selector
-  versionresolution/      # Version-resolution controller + Cincinnati client
+  versionresolution/      # Cluster catalog resolver + Cincinnati client used by version-sync
   util/                   # Shared packages (constants, errors, logger, setup)
   main.go                 # Root cobra command
 ```

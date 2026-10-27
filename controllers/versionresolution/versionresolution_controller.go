@@ -2,10 +2,12 @@ package versionresolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/openshift-online/gecko/controllers/util/catalog"
 	channelutil "github.com/openshift-online/gecko/controllers/util/channel"
 	"github.com/openshift-online/gecko/controllers/util/logger"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
@@ -21,19 +23,17 @@ import (
 
 const requeueStable = 5 * time.Minute
 
-// Reconciler resolves the OCP release image for a cluster via Cincinnati.
+// Reconciler resolves the OCP release image for a cluster from the Version catalog.
 type Reconciler struct {
-	cincinnati *CincinnatiClient
-	log        logger.Logger
-	client     client.Client
+	log    logger.Logger
+	client client.Client
 }
 
 // NewReconciler creates a new version-resolution Reconciler.
-func NewReconciler(cincinnati *CincinnatiClient, log logger.Logger, c client.Client) *Reconciler {
+func NewReconciler(log logger.Logger, c client.Client) *Reconciler {
 	return &Reconciler{
-		cincinnati: cincinnati,
-		log:        log,
-		client:     c,
+		log:    log,
+		client: c,
 	}
 }
 
@@ -93,28 +93,30 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, fmt.Errorf("vr: build channel for cluster %s: %w", clusterID, err)
 	}
 
-	// Check already resolved — version, channel group, and concrete Cincinnati
-	// channel must all match to skip re-resolution.
+	// Pin the image for this version and channel group. Fleet authorization can
+	// advance the CVO channel independently without resolving the image again.
 	if vr := cluster.Status.VersionResolution; vr != nil &&
-		vr.ReleaseVersion == version &&
-		vr.ChannelGroup == channelGroup &&
-		vr.CincinnatiChannel == channel {
-		r.log.Infof(ctx, "vr: cluster %s: version %s channel %s already resolved, checking again later", clusterID, version, channelGroup)
+		vr.ReleaseVersion == version && vr.ChannelGroup == channelGroup {
+		if vr.CincinnatiChannel != channel {
+			vr.CincinnatiChannel = channel
+			if err := r.client.Status().Update(ctx, &cluster); err != nil && !apierrors.IsConflict(err) {
+				return reconcile.Result{}, fmt.Errorf("vr: update cluster channel %s: %w", clusterID, err)
+			}
+		}
 		return reconcile.Result{RequeueAfter: requeueStable}, nil
 	}
-	r.log.Infof(ctx, "vr: cluster %s: resolving version %s via channel %s", clusterID, version, channel)
 
-	info, err := r.cincinnati.Resolve(ctx, version, channel)
+	image, err := catalog.Resolve(ctx, r.client, version, channelGroup)
 	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("vr: cincinnati resolve for cluster %s: %w", clusterID, err)
-	}
-	if info == nil {
-		r.log.Warnf(ctx, "vr: cluster %s: version %s not found in Cincinnati, retrying later", clusterID, version)
+		var unavailable *catalog.UnavailableError
+		if !errors.As(err, &unavailable) {
+			return reconcile.Result{}, fmt.Errorf("vr: catalog lookup for cluster %s: %w", clusterID, err)
+		}
 		if meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type:               "VersionResolved",
 			Status:             metav1.ConditionFalse,
-			Reason:             "VersionNotFoundInCincinnati",
-			Message:            fmt.Sprintf("Version %s not found in Cincinnati channel %s", version, channel),
+			Reason:             unavailable.Reason,
+			Message:            unavailable.Message,
 			ObservedGeneration: cluster.Generation,
 		}) {
 			if err := r.client.Status().Update(ctx, &cluster); err != nil && !apierrors.IsConflict(err) {
@@ -126,8 +128,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// Write VR result and VersionResolved condition to status.
 	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{
-		ReleaseImage:      info.Payload,
-		ReleaseVersion:    info.Version,
+		ReleaseImage:      image,
+		ReleaseVersion:    version,
 		CincinnatiChannel: channel,
 		ChannelGroup:      channelGroup,
 	}
@@ -135,7 +137,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		Type:               "VersionResolved",
 		Status:             metav1.ConditionTrue,
 		Reason:             "VersionResolved",
-		Message:            fmt.Sprintf("Version %s resolved to image %s", version, info.Payload),
+		Message:            fmt.Sprintf("Version %s resolved to image %s", version, image),
 		ObservedGeneration: cluster.Generation,
 	})
 	if err := r.client.Status().Update(ctx, &cluster); err != nil {

@@ -2,18 +2,16 @@ package nodepoolvrresolution
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/openshift-online/gecko/controllers/util/catalog"
 	"github.com/openshift-online/gecko/controllers/util/logger"
-	"github.com/openshift-online/gecko/controllers/versionresolution"
+	"github.com/openshift-online/gecko/controllers/util/setup"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -56,12 +55,14 @@ func (m *statusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration, _ 
 type storeClient struct {
 	nodepool     *privatev1.NodePool
 	cluster      *privatev1.Cluster
+	version      *privatev1.Version
+	versionErr   error
 	npGetErr     error
 	clsGetErr    error
 	statusWriter *statusWriter
 }
 
-func (m *storeClient) Get(_ context.Context, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+func (m *storeClient) Get(_ context.Context, key client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
 	switch o := obj.(type) {
 	case *privatev1.NodePool:
 		if m.npGetErr != nil {
@@ -70,7 +71,7 @@ func (m *storeClient) Get(_ context.Context, _ client.ObjectKey, obj client.Obje
 		if m.nodepool == nil {
 			return apierrors.NewNotFound(schema.GroupResource{Resource: "nodepool"}, "")
 		}
-		*o = *m.nodepool
+		m.nodepool.DeepCopyInto(o)
 		return nil
 	case *privatev1.Cluster:
 		if m.clsGetErr != nil {
@@ -79,7 +80,16 @@ func (m *storeClient) Get(_ context.Context, _ client.ObjectKey, obj client.Obje
 		if m.cluster == nil {
 			return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, "")
 		}
-		*o = *m.cluster
+		m.cluster.DeepCopyInto(o)
+		return nil
+	case *privatev1.Version:
+		if m.versionErr != nil {
+			return m.versionErr
+		}
+		if m.version == nil || m.version.Name != key.Name {
+			return apierrors.NewNotFound(schema.GroupResource{Resource: "versions"}, key.Name)
+		}
+		m.version.DeepCopyInto(o)
 		return nil
 	default:
 		return fmt.Errorf("unexpected type %T", obj)
@@ -150,27 +160,22 @@ func makeCluster(id string) *privatev1.Cluster {
 }
 
 // buildReconciler constructs a Reconciler backed by the given NodePool and
-// Cluster. cincURL points to a Cincinnati test server (may be empty for paths
-// that never reach it). statusErr is returned by Status().Update.
+// Cluster and catalog release. statusErr is returned by Status().Update.
 func buildReconciler(
 	t *testing.T,
 	np *privatev1.NodePool,
 	cluster *privatev1.Cluster,
-	cincURL string,
+	release *privatev1.Version,
 	npGetErr, clsGetErr, statusErr error,
 ) (*Reconciler, *storeClient) {
 	t.Helper()
 	sw := &statusWriter{updateErr: statusErr}
 	store := &storeClient{
-		nodepool: np, cluster: cluster,
+		nodepool: np, cluster: cluster, version: release,
 		npGetErr: npGetErr, clsGetErr: clsGetErr,
 		statusWriter: sw,
 	}
-	if cincURL == "" {
-		cincURL = "http://127.0.0.1:0" // unreachable; only used if the test reaches Cincinnati
-	}
-	cinc := versionresolution.NewCincinnatiClient(cincURL, "amd64")
-	return NewReconciler(cinc, newTestLogger(t), store), store
+	return NewReconciler(newTestLogger(t), store), store
 }
 
 // npReq returns a reconcile.Request for the given clusterID/nodepoolID pair.
@@ -178,23 +183,9 @@ func npReq(clusterID, nodepoolID string) reconcile.Request {
 	return reconcile.Request{NamespacedName: client.ObjectKey{Namespace: clusterID, Name: nodepoolID}}
 }
 
-// cincServer starts a test server that returns the given nodes as a Cincinnati graph.
-func cincServer(t *testing.T, nodes []versionresolution.ReleaseInfo) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		graph := versionresolution.CincinnatiGraph{Nodes: nodes}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(graph)
-	}))
-}
-
-// cincServerError starts a test server that always returns the given HTTP status.
-func cincServerError(t *testing.T, statusCode int) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(statusCode)
-		_, _ = w.Write([]byte("internal error"))
-	}))
+func catalogVersion(version, image string, groups ...string) *privatev1.Version {
+	return &privatev1.Version{ObjectMeta: metav1.ObjectMeta{Name: version},
+		Spec: privatev1.VersionSpec{ReleaseImage: image, ChannelGroups: groups}}
 }
 
 // conflictErr returns a Kubernetes 409 Conflict error.
@@ -205,7 +196,7 @@ func conflictErr() error {
 // ─── NodePool / Cluster fetch errors ─────────────────────────────────────────
 
 func TestReconciler_NodepoolNotFound(t *testing.T) {
-	r, _ := buildReconciler(t, nil, nil, "", nil, nil, nil)
+	r, _ := buildReconciler(t, nil, nil, nil, nil, nil, nil)
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-404"))
 
@@ -214,7 +205,7 @@ func TestReconciler_NodepoolNotFound(t *testing.T) {
 }
 
 func TestReconciler_NodepoolGetError(t *testing.T) {
-	r, _ := buildReconciler(t, nil, nil, "", fmt.Errorf("etcd timeout"), nil, nil)
+	r, _ := buildReconciler(t, nil, nil, nil, fmt.Errorf("etcd timeout"), nil, nil)
 
 	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 
@@ -224,7 +215,7 @@ func TestReconciler_NodepoolGetError(t *testing.T) {
 
 func TestReconciler_ClusterNotFoundForNodepool(t *testing.T) {
 	np := makeNP("cluster-1", "np-1", "")
-	r, _ := buildReconciler(t, np, nil, "", nil, nil, nil)
+	r, _ := buildReconciler(t, np, nil, nil, nil, nil, nil)
 
 	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 
@@ -234,7 +225,7 @@ func TestReconciler_ClusterNotFoundForNodepool(t *testing.T) {
 
 func TestReconciler_ClusterGetError(t *testing.T) {
 	np := makeNP("cluster-1", "np-1", "4.15.0")
-	r, _ := buildReconciler(t, np, nil, "", nil, fmt.Errorf("etcd timeout"), nil)
+	r, _ := buildReconciler(t, np, nil, nil, nil, fmt.Errorf("etcd timeout"), nil)
 
 	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 
@@ -247,7 +238,7 @@ func TestReconciler_ClusterGetError(t *testing.T) {
 func TestReconciler_VersionNotSet_SetsConditionAndReturns(t *testing.T) {
 	np := makeNP("cluster-1", "np-1", "") // no version
 
-	r, store := buildReconciler(t, np, makeCluster("cluster-1"), "", nil, nil, nil)
+	r, store := buildReconciler(t, np, makeCluster("cluster-1"), nil, nil, nil, nil)
 	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 
 	require.NoError(t, err)
@@ -262,7 +253,7 @@ func TestReconciler_VersionNotSet_SetsConditionAndReturns(t *testing.T) {
 func TestReconciler_VersionNotSet_StatusUpdateError(t *testing.T) {
 	np := makeNP("cluster-1", "np-1", "")
 
-	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), "", nil, nil, fmt.Errorf("api-server busy"))
+	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), nil, nil, nil, fmt.Errorf("api-server busy"))
 	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 
 	require.Error(t, err)
@@ -271,11 +262,11 @@ func TestReconciler_VersionNotSet_StatusUpdateError(t *testing.T) {
 
 // ─── already resolved ─────────────────────────────────────────────────────────
 
-func TestReconciler_AlreadyResolved_SkipsWithoutCincinnati(t *testing.T) {
+func TestReconciler_AlreadyResolved_SkipsWithoutCatalog(t *testing.T) {
 	np := makeNP("cluster-1", "np-1", "4.15.0")
 	np.Status.VersionResolution = &privatev1.VersionResolutionResult{ReleaseVersion: "4.15.0", ChannelGroup: "candidate"}
 
-	r, store := buildReconciler(t, np, makeCluster("cluster-1"), "", nil, nil, nil)
+	r, store := buildReconciler(t, np, makeCluster("cluster-1"), nil, nil, nil, nil)
 	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 
 	require.NoError(t, err)
@@ -288,146 +279,149 @@ func TestReconciler_AlreadyResolved_SkipsWithoutCincinnati(t *testing.T) {
 func TestReconciler_InvalidVersion_BuildChannelError(t *testing.T) {
 	np := makeNP("cluster-1", "np-1", "4") // no minor → invalid for buildChannel
 
-	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), "", nil, nil, nil)
+	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), nil, nil, nil, nil)
 	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "build channel")
 }
 
-func TestReconciler_CustomChannelGroup_UsedInCincinnatiRequest(t *testing.T) {
-	version := "4.15.0"
-	var capturedChannel string
-	customSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		capturedChannel = r.URL.Query().Get("channel")
-		graph := versionresolution.CincinnatiGraph{
-			Nodes: []versionresolution.ReleaseInfo{{Version: version, Payload: "quay.io/ocp:4.15.0"}},
-		}
-		_ = json.NewEncoder(w).Encode(graph)
-	}))
-	defer customSrv.Close()
-
-	np := makeNP("cluster-1", "np-1", version)
-	np.Spec.Release.ChannelGroup = "stable"
-
-	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), customSrv.URL, nil, nil, nil)
+func TestReconciler_CustomChannelGroup_UsesCatalogMembership(t *testing.T) {
+	np := makeNP("cluster-1", "np-1", "5.0.0-ec.6")
+	np.Spec.Release.ChannelGroup = "dev-preview"
+	release := catalogVersion(np.Spec.Release.Version, "ci-image", "dev-preview")
+	r, store := buildReconciler(t, np, makeCluster("cluster-1"), release, nil, nil, nil)
 	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
-
 	require.NoError(t, err)
-	assert.Equal(t, "stable-4.15", capturedChannel)
-}
-
-// ─── Cincinnati error paths ───────────────────────────────────────────────────
-
-func TestReconciler_CincinnatiError(t *testing.T) {
-	errSrv := cincServerError(t, http.StatusInternalServerError)
-	defer errSrv.Close()
-
-	np := makeNP("cluster-1", "np-1", "4.15.0")
-	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), errSrv.URL, nil, nil, nil)
-
-	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cincinnati resolve")
-}
-
-func TestReconciler_CincinnatiVersionNotFound_SetsCondition(t *testing.T) {
-	srv := cincServer(t, []versionresolution.ReleaseInfo{
-		{Version: "4.99.0", Payload: "quay.io/ocp:4.99.0"}, // different version → not found
-	})
-	defer srv.Close()
-
-	np := makeNP("cluster-1", "np-1", "4.15.0")
-	r, store := buildReconciler(t, np, makeCluster("cluster-1"), srv.URL, nil, nil, nil)
-
-	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
-
-	require.NoError(t, err)
-	assert.Equal(t, reconcile.Result{}, result)
-	assert.True(t, store.statusWriter.called)
-
 	updated := store.statusWriter.captured.(*privatev1.NodePool)
-	require.Len(t, updated.Status.Conditions, 1)
-	cond := updated.Status.Conditions[0]
-	assert.Equal(t, "NodePoolVersionResolved", cond.Type)
-	assert.Equal(t, metav1.ConditionFalse, cond.Status)
-	assert.Equal(t, "VersionNotFoundInCincinnati", cond.Reason)
+	require.Equal(t, "ci-image", updated.Status.VersionResolution.ReleaseImage)
+	require.Equal(t, "dev-preview-5.0", updated.Status.VersionResolution.CincinnatiChannel)
 }
 
-func TestReconciler_CincinnatiVersionNotFound_StatusUpdateError(t *testing.T) {
-	srv := cincServer(t, nil) // empty graph → version not found
-	defer srv.Close()
-
+func TestReconciler_CatalogErrorIsRetryable(t *testing.T) {
 	np := makeNP("cluster-1", "np-1", "4.15.0")
-	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), srv.URL, nil, nil, fmt.Errorf("api busy"))
-
+	r, store := buildReconciler(t, np, makeCluster("cluster-1"), nil, nil, nil, nil)
+	store.versionErr = errors.New("cache not synced")
 	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "update nodepool status")
+	require.ErrorIs(t, err, store.versionErr)
+	require.False(t, store.statusWriter.called, "infrastructure failures must not set a terminal False condition")
 }
 
-// ─── successful resolution ────────────────────────────────────────────────────
+func TestReconciler_CatalogUnavailable_SetsCondition(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		release *privatev1.Version
+		reason  string
+	}{
+		{"missing", nil, "VersionNotFoundInCatalog"},
+		{"wrong channel", catalogVersion("4.15.0", "image", "stable"), "VersionNotInChannelGroup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			np := makeNP("cluster-1", "np-1", "4.15.0")
+			r, store := buildReconciler(t, np, makeCluster("cluster-1"), tc.release, nil, nil, nil)
+			result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
+			require.NoError(t, err)
+			require.Equal(t, requeueStable, result.RequeueAfter)
+			updated := store.statusWriter.captured.(*privatev1.NodePool)
+			require.Nil(t, updated.Status.VersionResolution)
+			cond := meta.FindStatusCondition(updated.Status.Conditions, "NodePoolVersionResolved")
+			require.Equal(t, metav1.ConditionFalse, cond.Status)
+			require.Equal(t, tc.reason, cond.Reason)
+			require.Contains(t, cond.Message, "4.15.0")
+		})
+	}
+}
+
+func TestReconciler_CatalogUnavailable_StatusUpdateError(t *testing.T) {
+	np := makeNP("cluster-1", "np-1", "4.15.0")
+	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), nil, nil, nil, fmt.Errorf("api busy"))
+	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
+	require.ErrorContains(t, err, "update nodepool status")
+}
 
 func TestReconciler_ResolvesVersion_WritesStatusAndRequeues(t *testing.T) {
-	version := "4.15.0"
-	payload := "quay.io/openshift-release-dev/ocp-release:4.15.0-x86_64"
-
-	srv := cincServer(t, []versionresolution.ReleaseInfo{{Version: version, Payload: payload}})
-	defer srv.Close()
-
-	np := makeNP("cluster-1", "np-1", version)
-	r, store := buildReconciler(t, np, makeCluster("cluster-1"), srv.URL, nil, nil, nil)
-
+	np := makeNP("cluster-1", "np-1", "4.15.0")
+	np.Generation = 3
+	release := catalogVersion("4.15.0", "quay.io/ocp@sha256:original", "candidate")
+	r, store := buildReconciler(t, np, makeCluster("cluster-1"), release, nil, nil, nil)
 	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
-
 	require.NoError(t, err)
-	assert.Equal(t, requeueStable, result.RequeueAfter)
-	assert.True(t, store.statusWriter.called)
-
+	require.Equal(t, requeueStable, result.RequeueAfter)
 	updated := store.statusWriter.captured.(*privatev1.NodePool)
-	require.NotNil(t, updated.Status.VersionResolution)
-	assert.Equal(t, payload, updated.Status.VersionResolution.ReleaseImage)
-	assert.Equal(t, version, updated.Status.VersionResolution.ReleaseVersion)
-	assert.Equal(t, "candidate-4.15", updated.Status.VersionResolution.CincinnatiChannel)
-
-	require.Len(t, updated.Status.Conditions, 1)
-	cond := updated.Status.Conditions[0]
-	assert.Equal(t, "NodePoolVersionResolved", cond.Type)
-	assert.Equal(t, metav1.ConditionTrue, cond.Status)
-	assert.Equal(t, "VersionResolved", cond.Reason)
+	require.Equal(t, &privatev1.VersionResolutionResult{ReleaseImage: release.Spec.ReleaseImage,
+		ReleaseVersion: release.Name, ChannelGroup: "candidate", CincinnatiChannel: "candidate-4.15"}, updated.Status.VersionResolution)
+	cond := meta.FindStatusCondition(updated.Status.Conditions, "NodePoolVersionResolved")
+	require.Equal(t, metav1.ConditionTrue, cond.Status)
+	require.Equal(t, int64(3), cond.ObservedGeneration)
 }
 
 func TestReconciler_ResolvesVersion_StatusUpdateConflict_ReturnsNoError(t *testing.T) {
-	// A 409 conflict during the final status update is swallowed; another
-	// reconcile triggered by the watch will pick up the nodepool.
-	version := "4.15.0"
-	srv := cincServer(t, []versionresolution.ReleaseInfo{{Version: version, Payload: "quay.io/ocp:4.15.0"}})
-	defer srv.Close()
-
-	np := makeNP("cluster-1", "np-1", version)
-	r, store := buildReconciler(t, np, makeCluster("cluster-1"), srv.URL, nil, nil, conflictErr())
-
+	np := makeNP("cluster-1", "np-1", "4.15.0")
+	release := catalogVersion("4.15.0", "image", "candidate")
+	r, store := buildReconciler(t, np, makeCluster("cluster-1"), release, nil, nil, conflictErr())
 	result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
-
-	require.NoError(t, err, "conflict must be swallowed")
-	assert.Equal(t, reconcile.Result{}, result)
-	assert.True(t, store.statusWriter.called)
+	require.NoError(t, err)
+	require.Equal(t, reconcile.Result{}, result)
+	require.True(t, store.statusWriter.called)
 }
 
 func TestReconciler_ResolvesVersion_StatusUpdateError(t *testing.T) {
-	version := "4.15.0"
-	srv := cincServer(t, []versionresolution.ReleaseInfo{{Version: version, Payload: "quay.io/ocp:4.15.0"}})
-	defer srv.Close()
-
-	np := makeNP("cluster-1", "np-1", version)
-	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), srv.URL, nil, nil, fmt.Errorf("disk full"))
-
+	np := makeNP("cluster-1", "np-1", "4.15.0")
+	release := catalogVersion("4.15.0", "image", "candidate")
+	r, _ := buildReconciler(t, np, makeCluster("cluster-1"), release, nil, nil, fmt.Errorf("disk full"))
 	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
+	require.ErrorContains(t, err, "update nodepool status")
+}
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "update nodepool status")
+func TestReconciler_CatalogChangesPreservePinnedImage(t *testing.T) {
+	ctx := context.Background()
+	np := makeNP("cluster-1", "np-1", "4.15.0")
+	cluster := makeCluster("cluster-1")
+	cluster.Namespace = np.Namespace
+	release := catalogVersion("4.15.0", "original", "candidate")
+	apiClient := fake.NewClientBuilder().WithScheme(setup.NewScheme()).WithStatusSubresource(np).
+		WithObjects(np, cluster, release).Build()
+	r := NewReconciler(newTestLogger(t), apiClient)
+	_, err := r.Reconcile(ctx, npReq(np.Namespace, np.Name))
+	require.NoError(t, err)
+	release.Spec.ReleaseImage = "changed"
+	release.Spec.ChannelGroups = []string{"stable"}
+	require.NoError(t, apiClient.Update(ctx, release))
+	_, err = r.Reconcile(ctx, npReq(np.Namespace, np.Name))
+	require.NoError(t, err)
+	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
+	require.Equal(t, "original", np.Status.VersionResolution.ReleaseImage)
+	require.NoError(t, apiClient.Delete(ctx, release))
+	_, err = r.Reconcile(ctx, npReq(np.Namespace, np.Name))
+	require.NoError(t, err)
+	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
+	require.Equal(t, "original", np.Status.VersionResolution.ReleaseImage)
+}
+
+func TestReconciler_VersionEventResolvesPendingNodePool(t *testing.T) {
+	ctx := context.Background()
+	np := makeNP("cluster-1", "np-1", "5.0.0-ec.6")
+	np.Spec.Release.ChannelGroup = "dev-preview"
+	cluster := makeCluster("cluster-1")
+	cluster.Namespace = np.Namespace
+	// A resolved parent must not act as a fallback for a missing catalog entry.
+	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{ReleaseVersion: "5.0.0-ec.6", ReleaseImage: "parent-image"}
+	apiClient := fake.NewClientBuilder().WithScheme(setup.NewScheme()).WithStatusSubresource(np).
+		WithObjects(np, cluster).WithIndex(&privatev1.NodePool{}, catalog.ReleaseVersionField, catalog.ReleaseVersion).Build()
+	r := NewReconciler(newTestLogger(t), apiClient)
+	_, err := r.Reconcile(ctx, npReq(np.Namespace, np.Name))
+	require.NoError(t, err)
+	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
+	require.Nil(t, np.Status.VersionResolution)
+	release := catalogVersion("5.0.0-ec.6", "ci-image", "dev-preview")
+	require.NoError(t, apiClient.Create(ctx, release))
+	requests := catalog.ToNodePools(apiClient, newTestLogger(t))(ctx, release)
+	require.Equal(t, []reconcile.Request{npReq(np.Namespace, np.Name)}, requests)
+	_, err = r.Reconcile(ctx, requests[0])
+	require.NoError(t, err)
+	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
+	require.Equal(t, "ci-image", np.Status.VersionResolution.ReleaseImage)
+	require.True(t, meta.IsStatusConditionTrue(np.Status.Conditions, "NodePoolVersionResolved"))
 }
 
 // ─── buildChannel ─────────────────────────────────────────────────────────────

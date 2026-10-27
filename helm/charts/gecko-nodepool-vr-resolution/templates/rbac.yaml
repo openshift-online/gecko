@@ -7,6 +7,9 @@ metadata:
     {{- include "gecko-nodepool-vr-resolution.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["gcp.managed.openshift.io"]
+    resources: ["versions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["gcp.managed.openshift.io"]
     resources: ["nodepools"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["gcp.managed.openshift.io"]
