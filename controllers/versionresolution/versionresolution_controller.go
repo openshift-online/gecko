@@ -65,6 +65,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 		return reconcile.Result{}, nil
 	}
+	// Catalog rejection is terminal for this spec, including across restarts
+	// and unrelated status or Channel events. A new generation permits retry.
+	if catalog.ResolutionRejected(meta.FindStatusCondition(cluster.Status.Conditions, "VersionResolved"), cluster.Generation) {
+		return reconcile.Result{}, nil
+	}
 	version := cluster.Spec.Release.Version
 
 	channelGroup := channelutil.DefaultChannelGroup
@@ -123,7 +128,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				return reconcile.Result{}, fmt.Errorf("vr: update cluster status %s: %w", clusterID, err)
 			}
 		}
-		return reconcile.Result{RequeueAfter: requeueStable}, nil
+		return reconcile.Result{}, nil
 	}
 
 	// Write VR result and VersionResolved condition to status.

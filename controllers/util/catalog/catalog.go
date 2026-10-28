@@ -9,9 +9,23 @@ import (
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const (
+	reasonVersionNotFound = "VersionNotFoundInCatalog"
+	reasonChannelMismatch = "VersionNotInChannelGroup"
+)
+
+// ResolutionRejected reports a catalog rejection for the current spec generation.
+// It remains terminal until the user changes the spec or recreates the resource.
+func ResolutionRejected(condition *metav1.Condition, generation int64) bool {
+	return condition != nil && condition.Status == metav1.ConditionFalse &&
+		condition.ObservedGeneration == generation &&
+		(condition.Reason == reasonVersionNotFound || condition.Reason == reasonChannelMismatch)
+}
 
 // UnavailableError means the catalog does not offer the requested release.
 // Other errors indicate infrastructure failures and must remain retryable.
@@ -29,7 +43,7 @@ func Resolve(ctx context.Context, reader client.Reader, version, channelGroup st
 	if err := reader.Get(ctx, client.ObjectKey{Name: version}, &release); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", &UnavailableError{
-				Reason:  "VersionNotFoundInCatalog",
+				Reason:  reasonVersionNotFound,
 				Message: fmt.Sprintf("Version %s is not present in the Version catalog", version),
 			}
 		}
@@ -37,7 +51,7 @@ func Resolve(ctx context.Context, reader client.Reader, version, channelGroup st
 	}
 	if !slices.Contains(release.Spec.ChannelGroups, channelGroup) {
 		return "", &UnavailableError{
-			Reason:  "VersionNotInChannelGroup",
+			Reason:  reasonChannelMismatch,
 			Message: fmt.Sprintf("Version %s is not published in channel group %s", version, channelGroup),
 		}
 	}

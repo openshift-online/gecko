@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/openshift-online/gecko/controllers/util/catalog"
 	"github.com/openshift-online/gecko/controllers/util/logger"
 	"github.com/openshift-online/gecko/controllers/util/setup"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
@@ -305,6 +304,13 @@ func TestReconciler_CatalogErrorIsRetryable(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 	require.ErrorIs(t, err, store.versionErr)
 	require.False(t, store.statusWriter.called, "infrastructure failures must not set a terminal False condition")
+
+	store.versionErr = nil
+	store.version = catalogVersion("4.15.0", "recovered-image", "candidate")
+	_, err = r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
+	require.NoError(t, err)
+	updated := store.statusWriter.captured.(*privatev1.NodePool)
+	require.Equal(t, "recovered-image", updated.Status.VersionResolution.ReleaseImage)
 }
 
 func TestReconciler_CatalogUnavailable_SetsCondition(t *testing.T) {
@@ -321,7 +327,7 @@ func TestReconciler_CatalogUnavailable_SetsCondition(t *testing.T) {
 			r, store := buildReconciler(t, np, makeCluster("cluster-1"), tc.release, nil, nil, nil)
 			result, err := r.Reconcile(context.Background(), npReq("cluster-1", "np-1"))
 			require.NoError(t, err)
-			require.Equal(t, requeueStable, result.RequeueAfter)
+			require.Equal(t, reconcile.Result{}, result)
 			updated := store.statusWriter.captured.(*privatev1.NodePool)
 			require.Nil(t, updated.Status.VersionResolution)
 			cond := meta.FindStatusCondition(updated.Status.Conditions, "NodePoolVersionResolved")
@@ -339,7 +345,7 @@ func TestReconciler_CatalogUnavailable_StatusUpdateError(t *testing.T) {
 	require.ErrorContains(t, err, "update nodepool status")
 }
 
-func TestReconciler_ResolvesVersion_WritesStatusAndRequeues(t *testing.T) {
+func TestReconciler_ResolvesVersion_WritesStatus(t *testing.T) {
 	np := makeNP("cluster-1", "np-1", "4.15.0")
 	np.Generation = 3
 	release := catalogVersion("4.15.0", "quay.io/ocp@sha256:original", "candidate")
@@ -398,30 +404,60 @@ func TestReconciler_CatalogChangesPreservePinnedImage(t *testing.T) {
 	require.Equal(t, "original", np.Status.VersionResolution.ReleaseImage)
 }
 
-func TestReconciler_VersionEventResolvesPendingNodePool(t *testing.T) {
-	ctx := context.Background()
-	np := makeNP("cluster-1", "np-1", "5.0.0-ec.6")
-	np.Spec.Release.ChannelGroup = "dev-preview"
-	cluster := makeCluster("cluster-1")
-	cluster.Namespace = np.Namespace
-	// A resolved parent must not act as a fallback for a missing catalog entry.
-	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{ReleaseVersion: "5.0.0-ec.6", ReleaseImage: "parent-image"}
-	apiClient := fake.NewClientBuilder().WithScheme(setup.NewScheme()).WithStatusSubresource(np).
-		WithObjects(np, cluster).WithIndex(&privatev1.NodePool{}, catalog.ReleaseVersionField, catalog.ReleaseVersion).Build()
-	r := NewReconciler(newTestLogger(t), apiClient)
-	_, err := r.Reconcile(ctx, npReq(np.Namespace, np.Name))
-	require.NoError(t, err)
-	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
-	require.Nil(t, np.Status.VersionResolution)
-	release := catalogVersion("5.0.0-ec.6", "ci-image", "dev-preview")
-	require.NoError(t, apiClient.Create(ctx, release))
-	requests := catalog.ToNodePools(apiClient, newTestLogger(t))(ctx, release)
-	require.Equal(t, []reconcile.Request{npReq(np.Namespace, np.Name)}, requests)
-	_, err = r.Reconcile(ctx, requests[0])
-	require.NoError(t, err)
-	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
-	require.Equal(t, "ci-image", np.Status.VersionResolution.ReleaseImage)
-	require.True(t, meta.IsStatusConditionTrue(np.Status.Conditions, "NodePoolVersionResolved"))
+func TestReconciler_CatalogRejectionRequiresResubmission(t *testing.T) {
+	for _, missing := range []bool{true, false} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			ctx := context.Background()
+			np := makeNP("cluster-1", "np-1", "5.0.0-ec.6")
+			np.Generation = 1
+			np.Spec.Release.ChannelGroup = "dev-preview"
+			cluster := makeCluster("cluster-1")
+			cluster.Namespace = np.Namespace
+			// A resolved parent must not act as a fallback for a missing release.
+			cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{ReleaseVersion: "5.0.0-ec.6", ReleaseImage: "parent-image"}
+			release := catalogVersion("5.0.0-ec.6", "ci-image", "stable")
+			objects := []client.Object{np, cluster}
+			if !missing {
+				objects = append(objects, release)
+			}
+			apiClient := fake.NewClientBuilder().WithScheme(setup.NewScheme()).WithStatusSubresource(np).WithObjects(objects...).Build()
+			r := NewReconciler(newTestLogger(t), apiClient)
+			result, err := r.Reconcile(ctx, npReq(np.Namespace, np.Name))
+			require.NoError(t, err)
+			require.Equal(t, reconcile.Result{}, result, "catalog rejection must not schedule a retry")
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
+			require.Nil(t, np.Status.VersionResolution)
+			rejected := *meta.FindStatusCondition(np.Status.Conditions, "NodePoolVersionResolved")
+			require.Equal(t, metav1.ConditionFalse, rejected.Status)
+			require.Equal(t, int64(1), rejected.ObservedGeneration)
+
+			release.Spec.ChannelGroups = []string{"dev-preview"}
+			if missing {
+				require.NoError(t, apiClient.Create(ctx, release))
+			} else {
+				require.NoError(t, apiClient.Update(ctx, release))
+			}
+			r = NewReconciler(newTestLogger(t), apiClient)
+			result, err = r.Reconcile(ctx, npReq(np.Namespace, np.Name))
+			require.NoError(t, err)
+			require.Equal(t, reconcile.Result{}, result)
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
+			require.Nil(t, np.Status.VersionResolution, "publishing the release must not revive a rejected request")
+			require.Equal(t, rejected, *meta.FindStatusCondition(np.Status.Conditions, "NodePoolVersionResolved"))
+
+			np.Spec.Release.ChannelGroup = "nightly"
+			np.Generation++
+			require.NoError(t, apiClient.Update(ctx, np))
+			release.Spec.ChannelGroups = append(release.Spec.ChannelGroups, "nightly")
+			require.NoError(t, apiClient.Update(ctx, release))
+			result, err = r.Reconcile(ctx, npReq(np.Namespace, np.Name))
+			require.NoError(t, err)
+			require.Equal(t, requeueStable, result.RequeueAfter)
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(np), np))
+			require.Equal(t, "ci-image", np.Status.VersionResolution.ReleaseImage)
+			require.True(t, meta.IsStatusConditionTrue(np.Status.Conditions, "NodePoolVersionResolved"))
+		})
+	}
 }
 
 // ─── buildChannel ─────────────────────────────────────────────────────────────

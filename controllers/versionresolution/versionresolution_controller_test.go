@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/openshift-online/gecko/controllers/util/catalog"
 	"github.com/openshift-online/gecko/controllers/util/logger"
 	"github.com/openshift-online/gecko/controllers/util/setup"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
@@ -220,7 +219,7 @@ func TestReconciler_CatalogUnavailable(t *testing.T) {
 			r, store := buildReconciler(t, cluster, tc.release)
 			result, err := r.Reconcile(context.Background(), clusterReq("cluster"))
 			require.NoError(t, err)
-			require.Equal(t, requeueStable, result.RequeueAfter)
+			require.Equal(t, reconcile.Result{}, result)
 			updated := store.statusWriter.captured.(*privatev1.Cluster)
 			require.Nil(t, updated.Status.VersionResolution)
 			condition := meta.FindStatusCondition(updated.Status.Conditions, "VersionResolved")
@@ -239,6 +238,13 @@ func TestReconciler_CatalogErrorIsRetryable(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), clusterReq("cluster"))
 	require.ErrorIs(t, err, store.versionErr)
 	require.Nil(t, store.statusWriter, "infrastructure errors must not set a terminal False condition")
+
+	store.versionErr = nil
+	store.version = catalogVersion("4.22.14", "recovered-image", "stable")
+	_, err = r.Reconcile(context.Background(), clusterReq("cluster"))
+	require.NoError(t, err)
+	updated := store.statusWriter.captured.(*privatev1.Cluster)
+	require.Equal(t, "recovered-image", updated.Status.VersionResolution.ReleaseImage)
 }
 
 func TestReconciler_StatusUpdateError(t *testing.T) {
@@ -284,24 +290,57 @@ func TestReconciler_CatalogChangesPreservePinnedImage(t *testing.T) {
 	require.Equal(t, "original", cluster.Status.VersionResolution.ReleaseImage)
 }
 
-func TestReconciler_VersionEventResolvesPendingCluster(t *testing.T) {
-	ctx := context.Background()
-	cluster := &privatev1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster", Namespace: "hyperfleet"}}
-	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "5.0.0-ec.6", ChannelGroup: "dev-preview"}
-	apiClient := fake.NewClientBuilder().WithScheme(setup.NewScheme()).WithStatusSubresource(cluster).
-		WithObjects(cluster).WithIndex(&privatev1.Cluster{}, catalog.ReleaseVersionField, catalog.ReleaseVersion).Build()
-	r := NewReconciler(newTestLogger(t), apiClient)
-	_, err := r.Reconcile(ctx, clusterReq("cluster"))
-	require.NoError(t, err)
-	release := catalogVersion("5.0.0-ec.6", "ci-image", "dev-preview")
-	require.NoError(t, apiClient.Create(ctx, release))
-	requests := catalog.ToClusters(apiClient, newTestLogger(t))(ctx, release)
-	require.Equal(t, []reconcile.Request{clusterReq("cluster")}, requests)
-	_, err = r.Reconcile(ctx, requests[0])
-	require.NoError(t, err)
-	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
-	require.Equal(t, "ci-image", cluster.Status.VersionResolution.ReleaseImage)
-	require.True(t, meta.IsStatusConditionTrue(cluster.Status.Conditions, "VersionResolved"))
+func TestReconciler_CatalogRejectionRequiresResubmission(t *testing.T) {
+	for _, missing := range []bool{true, false} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			ctx := context.Background()
+			cluster := &privatev1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster", Namespace: "hyperfleet", Generation: 1}}
+			cluster.Spec.Release = privatev1.ReleaseSpec{Version: "5.0.0-ec.6", ChannelGroup: "dev-preview"}
+			release := catalogVersion("5.0.0-ec.6", "ci-image", "stable")
+			objects := []client.Object{cluster}
+			if !missing {
+				objects = append(objects, release)
+			}
+			apiClient := fake.NewClientBuilder().WithScheme(setup.NewScheme()).WithStatusSubresource(cluster).WithObjects(objects...).Build()
+			r := NewReconciler(newTestLogger(t), apiClient)
+			result, err := r.Reconcile(ctx, clusterReq("cluster"))
+			require.NoError(t, err)
+			require.Equal(t, reconcile.Result{}, result, "catalog rejection must not schedule a retry")
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+			require.Nil(t, cluster.Status.VersionResolution)
+			rejected := *meta.FindStatusCondition(cluster.Status.Conditions, "VersionResolved")
+			require.Equal(t, metav1.ConditionFalse, rejected.Status)
+			require.Equal(t, int64(1), rejected.ObservedGeneration)
+
+			release.Spec.ChannelGroups = []string{"dev-preview"}
+			if missing {
+				require.NoError(t, apiClient.Create(ctx, release))
+			} else {
+				require.NoError(t, apiClient.Update(ctx, release))
+			}
+			// A new reconciler simulates restart or an unrelated status/Channel event.
+			r = NewReconciler(newTestLogger(t), apiClient)
+			result, err = r.Reconcile(ctx, clusterReq("cluster"))
+			require.NoError(t, err)
+			require.Equal(t, reconcile.Result{}, result)
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+			require.Nil(t, cluster.Status.VersionResolution, "publishing the release must not revive a rejected request")
+			require.Equal(t, rejected, *meta.FindStatusCondition(cluster.Status.Conditions, "VersionResolved"))
+
+			// A spec change starts a new resolution attempt.
+			cluster.Spec.Release.ChannelGroup = "nightly"
+			cluster.Generation++
+			require.NoError(t, apiClient.Update(ctx, cluster))
+			release.Spec.ChannelGroups = append(release.Spec.ChannelGroups, "nightly")
+			require.NoError(t, apiClient.Update(ctx, release))
+			result, err = r.Reconcile(ctx, clusterReq("cluster"))
+			require.NoError(t, err)
+			require.Equal(t, requeueStable, result.RequeueAfter)
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+			require.Equal(t, "ci-image", cluster.Status.VersionResolution.ReleaseImage)
+			require.True(t, meta.IsStatusConditionTrue(cluster.Status.Conditions, "VersionResolved"))
+		})
+	}
 }
 
 func TestBuildChannel(t *testing.T) {

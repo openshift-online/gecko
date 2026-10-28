@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/openshift-online/gecko/controllers/util/catalog"
 	channelutil "github.com/openshift-online/gecko/controllers/util/channel"
 	"github.com/openshift-online/gecko/controllers/util/setup"
 	"github.com/openshift-online/gecko/controllers/versionresolution"
@@ -38,16 +37,10 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				return fmt.Errorf("index clusters by channel group: %w", err)
 			}
 
-			if err := mgr.GetFieldIndexer().IndexField(ctx, &privatev1.Cluster{},
-				catalog.ReleaseVersionField, catalog.ReleaseVersion); err != nil {
-				return fmt.Errorf("index releases: %w", err)
-			}
-
 			rec := versionresolution.NewReconciler(log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&privatev1.Cluster{}).
-				Watches(&privatev1.Version{}, handler.EnqueueRequestsFromMapFunc(catalog.ToClusters(mgr.GetClient(), log))).
 				Watches(&privatev1.Channel{}, handler.EnqueueRequestsFromMapFunc(channelutil.ToClusters(mgr.GetClient(), log))).
 				WithOptions(rf.ControllerOpts()).
 				Complete(rec); err != nil {

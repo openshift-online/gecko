@@ -81,6 +81,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 		return reconcile.Result{}, nil
 	}
+	// Catalog rejection is terminal for this spec, including across restarts
+	// and unrelated status or Channel events. A new generation permits retry.
+	if catalog.ResolutionRejected(meta.FindStatusCondition(np.Status.Conditions, "NodePoolVersionResolved"), np.Generation) {
+		return reconcile.Result{}, nil
+	}
 	version := np.Spec.Release.Version
 
 	channelGroup := defaultChannelGroup
@@ -119,7 +124,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 				return reconcile.Result{}, fmt.Errorf("nodepool-vr: update nodepool status %s: %w", nodepoolID, err)
 			}
 		}
-		return reconcile.Result{RequeueAfter: requeueStable}, nil
+		return reconcile.Result{}, nil
 	}
 
 	// Write VR result and NodePoolVersionResolved condition to status.

@@ -85,14 +85,14 @@ Reconciles `Cluster` resources. Resolves the requested release image from the cl
 - Writes `Status.VersionResolution` (ReleaseVersion, ReleaseImage, CincinnatiChannel, ChannelGroup)
 - Pins the image once resolved for a version and channel group, even if the catalog changes or removes the release
 - Retains the existing CVO channel calculation; fleet authorization may advance that channel without changing the pinned image
-- Watches Version changes to retry pending requests immediately; periodic requeues recover missed events
+- Catalog rejection is terminal for the current spec generation: publishing or changing a Version does not retry a rejected Cluster; change the spec or recreate the resource to submit another attempt
 - Reports `VersionNotFoundInCatalog` or `VersionNotInChannelGroup` for unavailable releases; API and cache errors remain retryable
 
-Deploy a healthy version-sync with configured Channels and a populated catalog before promoting this change. An empty catalog leaves new or changed requests unresolved. There is no fallback for an aged-out release, including when adding a node pool to an existing cluster.
+Deploy a healthy version-sync with configured Channels and a populated catalog before promoting this change. An empty catalog rejects new or changed requests. Populate the catalog before submitting them; rejected requests require a spec change or recreation after the catalog is corrected. There is no fallback for an aged-out release, including when adding a node pool to an existing cluster.
 
 ### nodepool-vr (NodePool Version Resolution)
 
-Reconciles `NodePool` resources using the same catalog lookup, channel membership checks, image pinning, and Version watches as version-resolution. It preserves the existing default channel group (`candidate`); clusters default to `stable`. Neither resolver queries an external release source. version-sync remains responsible for synchronizing the catalog from Cincinnati.
+Reconciles `NodePool` resources using the same catalog lookup, channel membership checks, image pinning, and terminal catalog rejection behavior as version-resolution. It preserves the existing default channel group (`candidate`); clusters default to `stable`. Neither resolver queries an external release source. version-sync remains responsible for synchronizing the catalog from Cincinnati.
 
 ### hc-controller (HostedCluster Controller)
 
