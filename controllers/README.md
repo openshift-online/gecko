@@ -88,7 +88,12 @@ Reconciles `Cluster` resources. Resolves the requested release image from the cl
 - Catalog rejection is terminal for the current spec generation: publishing or changing a Version does not retry a rejected Cluster; change the spec or recreate the resource to submit another attempt
 - Reports `VersionNotFoundInCatalog` or `VersionNotInChannelGroup` for unavailable releases; API and cache errors remain retryable
 
-Deploy a healthy version-sync with configured Channels and a populated catalog before promoting this change. An empty catalog rejects new or changed requests. Populate the catalog before submitting them; rejected requests require a spec change or recreation after the catalog is corrected. There is no fallback for an aged-out release, including when adding a node pool to an existing cluster.
+Before promoting the resolver deployment:
+
+- [ ] Verify version-sync is healthy and the environment's Channels are configured.
+- [ ] Confirm the catalog contains the required releases, channel-group memberships, and release images.
+
+An empty catalog rejects new or changed requests. Populate the catalog before submitting them; rejected requests require a spec change or recreation after the catalog is corrected. There is no fallback for an aged-out release, including when adding a node pool to an existing cluster.
 
 ### nodepool-vr (NodePool Version Resolution)
 
