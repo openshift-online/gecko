@@ -97,7 +97,7 @@ An empty catalog rejects new or changed requests. Populate the catalog before su
 
 ### nodepool-vr (NodePool Version Resolution)
 
-Reconciles `NodePool` resources using the same catalog lookup, channel membership checks, image pinning, and terminal catalog rejection behavior as version-resolution. It preserves the existing default channel group (`candidate`); clusters default to `stable`. Neither resolver queries an external release source. version-sync remains responsible for synchronizing the catalog from Cincinnati.
+Reconciles `NodePool` resources using the same catalog lookup, channel membership checks, image pinning, and terminal catalog rejection behavior as version-resolution. It preserves the existing default channel group (`candidate`); clusters default to `stable`. Neither resolver queries an external release source. version-sync remains responsible for synchronizing the catalog from its configured source: Cincinnati (`--source-type=cincinnati`, default) or the release controller (`--source-type=release-controller`).
 
 ### hc-controller (HostedCluster Controller)
 
