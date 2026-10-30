@@ -16,8 +16,6 @@ import (
 
 // NewCommand returns the version-resolution subcommand.
 func NewCommand(rf *setup.RootFlags) *cobra.Command {
-	var cincinnatiURL, arch string
-
 	cmd := &cobra.Command{
 		Use:   "version-resolution",
 		Short: "Run the version-resolution controller",
@@ -39,8 +37,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				return fmt.Errorf("index clusters by channel group: %w", err)
 			}
 
-			cinClient := versionresolution.NewCincinnatiClient(cincinnatiURL, arch)
-			rec := versionresolution.NewReconciler(cinClient, log, mgr.GetClient())
+			rec := versionresolution.NewReconciler(log, mgr.GetClient())
 
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&privatev1.Cluster{}).
@@ -53,9 +50,6 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 			return mgr.Start(ctx)
 		},
 	}
-
-	cmd.Flags().StringVar(&cincinnatiURL, "cincinnati-url", "https://api.openshift.com/api/upgrades_info/v1/graph", "Cincinnati API URL")
-	cmd.Flags().StringVar(&arch, "arch", "amd64", "CPU architecture for Cincinnati query")
 
 	return cmd
 }

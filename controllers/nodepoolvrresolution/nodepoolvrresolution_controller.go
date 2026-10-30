@@ -2,12 +2,13 @@ package nodepoolvrresolution
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/openshift-online/gecko/controllers/util/catalog"
 	"github.com/openshift-online/gecko/controllers/util/logger"
-	"github.com/openshift-online/gecko/controllers/versionresolution"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -25,19 +26,17 @@ const (
 	requeueStable       = 5 * time.Minute
 )
 
-// Reconciler resolves the OCP release image for a node pool via Cincinnati.
+// Reconciler resolves the OCP release image for a node pool from the Version catalog.
 type Reconciler struct {
-	cincinnati *versionresolution.CincinnatiClient
-	log        logger.Logger
-	client     client.Client
+	log    logger.Logger
+	client client.Client
 }
 
 // NewReconciler creates a new nodepool-vr Reconciler.
-func NewReconciler(cincinnati *versionresolution.CincinnatiClient, log logger.Logger, c client.Client) *Reconciler {
+func NewReconciler(log logger.Logger, c client.Client) *Reconciler {
 	return &Reconciler{
-		cincinnati: cincinnati,
-		log:        log,
-		client:     c,
+		log:    log,
+		client: c,
 	}
 }
 
@@ -82,6 +81,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		}
 		return reconcile.Result{}, nil
 	}
+	// Catalog rejection is terminal for this spec, including across restarts
+	// and unrelated status or Channel events. A new generation permits retry.
+	if catalog.ResolutionRejected(meta.FindStatusCondition(np.Status.Conditions, "NodePoolVersionResolved"), np.Generation) {
+		return reconcile.Result{}, nil
+	}
 	version := np.Spec.Release.Version
 
 	channelGroup := defaultChannelGroup
@@ -103,17 +107,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 	r.log.Infof(ctx, "nodepool-vr: nodepool %s: resolving version %s via channel %s", nodepoolID, version, channel)
 
-	info, err := r.cincinnati.Resolve(ctx, version, channel)
+	image, err := catalog.Resolve(ctx, r.client, version, channelGroup)
 	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("nodepool-vr: cincinnati resolve for nodepool %s: %w", nodepoolID, err)
-	}
-	if info == nil {
-		r.log.Warnf(ctx, "nodepool-vr: nodepool %s: version %s not found in Cincinnati, waiting for next event", nodepoolID, version)
+		var unavailable *catalog.UnavailableError
+		if !errors.As(err, &unavailable) {
+			return reconcile.Result{}, fmt.Errorf("nodepool-vr: catalog lookup for nodepool %s: %w", nodepoolID, err)
+		}
 		if meta.SetStatusCondition(&np.Status.Conditions, metav1.Condition{
 			Type:               "NodePoolVersionResolved",
 			Status:             metav1.ConditionFalse,
-			Reason:             "VersionNotFoundInCincinnati",
-			Message:            fmt.Sprintf("Version %s not found in Cincinnati channel %s", version, channel),
+			Reason:             unavailable.Reason,
+			Message:            unavailable.Message,
 			ObservedGeneration: np.Generation,
 		}) {
 			if err := r.client.Status().Update(ctx, &np); err != nil && !apierrors.IsConflict(err) {
@@ -125,8 +129,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 
 	// Write VR result and NodePoolVersionResolved condition to status.
 	np.Status.VersionResolution = &privatev1.VersionResolutionResult{
-		ReleaseImage:      info.Payload,
-		ReleaseVersion:    info.Version,
+		ReleaseImage:      image,
+		ReleaseVersion:    version,
 		CincinnatiChannel: channel,
 		ChannelGroup:      channelGroup,
 	}
@@ -134,7 +138,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		Type:               "NodePoolVersionResolved",
 		Status:             metav1.ConditionTrue,
 		Reason:             "VersionResolved",
-		Message:            fmt.Sprintf("Version %s resolved to image %s", version, info.Payload),
+		Message:            fmt.Sprintf("Version %s resolved to image %s", version, image),
 		ObservedGeneration: np.Generation,
 	})
 	if err := r.client.Status().Update(ctx, &np); err != nil {

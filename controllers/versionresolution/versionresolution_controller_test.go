@@ -2,23 +2,24 @@ package versionresolution
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/openshift-online/gecko/controllers/util/logger"
+	"github.com/openshift-online/gecko/controllers/util/setup"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -40,10 +41,12 @@ func newTestLogger(t *testing.T) logger.Logger {
 type mockStatusWriter struct {
 	updateErr error
 	called    bool
+	captured  client.Object
 }
 
-func (m *mockStatusWriter) Update(_ context.Context, _ client.Object, _ ...client.SubResourceUpdateOption) error {
+func (m *mockStatusWriter) Update(_ context.Context, obj client.Object, _ ...client.SubResourceUpdateOption) error {
 	m.called = true
+	m.captured = obj
 	return m.updateErr
 }
 func (m *mockStatusWriter) Create(_ context.Context, _ client.Object, _ client.Object, _ ...client.SubResourceCreateOption) error {
@@ -60,6 +63,8 @@ func (m *mockStatusWriter) Apply(_ context.Context, _ runtime.ApplyConfiguration
 type mockStoreClient struct {
 	cluster      *privatev1.Cluster
 	channel      *privatev1.Channel
+	version      *privatev1.Version
+	versionErr   error
 	getErr       error
 	updateCalled bool
 	statusWriter *mockStatusWriter
@@ -74,13 +79,22 @@ func (m *mockStoreClient) Get(_ context.Context, key client.ObjectKey, obj clien
 		if m.cluster == nil {
 			return apierrors.NewNotFound(schema.GroupResource{Resource: "cluster"}, key.Name)
 		}
-		*typed = *m.cluster
+		m.cluster.DeepCopyInto(typed)
+		return nil
+	case *privatev1.Version:
+		if m.versionErr != nil {
+			return m.versionErr
+		}
+		if m.version == nil || m.version.Name != key.Name {
+			return apierrors.NewNotFound(schema.GroupResource{Resource: "versions"}, key.Name)
+		}
+		m.version.DeepCopyInto(typed)
 		return nil
 	case *privatev1.Channel:
 		if m.channel == nil || m.channel.Name != key.Name {
 			return apierrors.NewNotFound(schema.GroupResource{Resource: "channel"}, key.Name)
 		}
-		*typed = *m.channel
+		m.channel.DeepCopyInto(typed)
 		return nil
 	default:
 		return fmt.Errorf("unexpected type %T", obj)
@@ -125,196 +139,208 @@ func (m *mockStoreClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVer
 }
 func (m *mockStoreClient) IsObjectNamespaced(_ runtime.Object) (bool, error) { return false, nil }
 
-// newMockCincinnati builds a simple httptest server that returns an empty graph.
-func newMockCincinnati(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(CincinnatiGraph{}); err != nil {
-			t.Errorf("encode Cincinnati graph: %v", err)
-		}
-	}))
-}
-
-// clusterReq returns a reconcile.Request for the given cluster name.
 func clusterReq(name string) reconcile.Request {
-	return reconcile.Request{
-		NamespacedName: client.ObjectKey{Namespace: "hyperfleet", Name: name},
-	}
+	return reconcile.Request{NamespacedName: client.ObjectKey{Namespace: "hyperfleet", Name: name}}
 }
 
-// buildReconciler wires up a Reconciler backed by the store client and Cincinnati mock.
-func buildReconciler(
-	t *testing.T,
-	cluster *privatev1.Cluster,
-	cincSrv *httptest.Server,
-) (*Reconciler, *mockStoreClient) {
+func catalogVersion(version, image string, groups ...string) *privatev1.Version {
+	return &privatev1.Version{ObjectMeta: metav1.ObjectMeta{Name: version},
+		Spec: privatev1.VersionSpec{ReleaseImage: image, ChannelGroups: groups}}
+}
+
+func buildReconciler(t *testing.T, cluster *privatev1.Cluster, release *privatev1.Version) (*Reconciler, *mockStoreClient) {
 	t.Helper()
-	storeClient := &mockStoreClient{cluster: cluster}
-	cincClient := NewCincinnatiClient(cincSrv.URL, "amd64")
-	return NewReconciler(cincClient, newTestLogger(t), storeClient), storeClient
+	store := &mockStoreClient{cluster: cluster, version: release}
+	return NewReconciler(newTestLogger(t), store), store
 }
-
-// ---- tests ------------------------------------------------------------------
 
 func TestReconciler_HappyPath(t *testing.T) {
-	release := &ReleaseInfo{
-		Version: "4.22.0-ec.4",
-		Payload: "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
+	for _, group := range []string{"", "stable", "fast", "candidate", "dev-preview"} {
+		t.Run(group, func(t *testing.T) {
+			effectiveGroup := group
+			if effectiveGroup == "" {
+				effectiveGroup = "stable"
+			}
+			cluster := &privatev1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster", Namespace: "hyperfleet", Generation: 3}}
+			cluster.Spec.Release = privatev1.ReleaseSpec{Version: "5.0.0-ec.6", ChannelGroup: group}
+			release := catalogVersion("5.0.0-ec.6", "quay.io/ocp@sha256:original", effectiveGroup)
+			r, store := buildReconciler(t, cluster, release)
+			result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+			require.NoError(t, err)
+			require.Equal(t, requeueStable, result.RequeueAfter)
+			require.False(t, store.updateCalled)
+			updated := store.statusWriter.captured.(*privatev1.Cluster)
+			require.Equal(t, &privatev1.VersionResolutionResult{ReleaseImage: release.Spec.ReleaseImage,
+				ReleaseVersion: release.Name, ChannelGroup: effectiveGroup, CincinnatiChannel: effectiveGroup + "-5.0"}, updated.Status.VersionResolution)
+			condition := meta.FindStatusCondition(updated.Status.Conditions, "VersionResolved")
+			require.NotNil(t, condition)
+			require.Equal(t, metav1.ConditionTrue, condition.Status)
+			require.Equal(t, int64(3), condition.ObservedGeneration)
+		})
 	}
-	requestedChannel := make(chan string, 1)
-	cincSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedChannel <- r.URL.Query().Get("channel")
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(CincinnatiGraph{Nodes: []ReleaseInfo{*release}}); err != nil {
-			t.Errorf("encode Cincinnati graph: %v", err)
-		}
-	}))
-	defer cincSrv.Close()
-
-	cluster := &privatev1.Cluster{}
-	cluster.SetName("cluster-1")
-	cluster.SetNamespace("hyperfleet")
-	cluster.SetGeneration(3)
-	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
-
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
-
-	result, err := r.Reconcile(context.Background(), clusterReq("cluster-1"))
-
-	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{RequeueAfter: requeueStable}, result)
-	require.False(t, storeClient.updateCalled, "expected no spec Update (result written to status)")
-	require.NotNil(t, storeClient.statusWriter)
-	require.True(t, storeClient.statusWriter.called, "expected Status().Update to be called")
-	require.Equal(t, "stable-4.22", <-requestedChannel)
-}
-
-func TestReconciler_AlreadyResolved(t *testing.T) {
-	cincSrv := newMockCincinnati(t)
-	defer cincSrv.Close()
-
-	cluster := &privatev1.Cluster{}
-	cluster.SetName("cluster-2")
-	cluster.SetNamespace("hyperfleet")
-	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
-	cluster.Status.VersionResolution = &privatev1.VersionResolutionResult{
-		ReleaseImage:      "quay.io/openshift-release-dev/ocp-release:4.22.0-ec.4-x86_64",
-		ReleaseVersion:    "4.22.0-ec.4",
-		CincinnatiChannel: "stable-4.22",
-		ChannelGroup:      "stable",
-	}
-
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
-
-	result, err := r.Reconcile(context.Background(), clusterReq("cluster-2"))
-
-	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{RequeueAfter: requeueStable}, result)
-	require.False(t, storeClient.updateCalled, "expected no spec Update")
-}
-
-func TestReconciler_FleetMinorAdvancesCincinnatiChannel(t *testing.T) {
-	requestedChannel := make(chan string, 1)
-	cincSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedChannel <- r.URL.Query().Get("channel")
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(CincinnatiGraph{Nodes: []ReleaseInfo{{
-			Version: "4.22.14",
-			Payload: "quay.io/openshift-release-dev/ocp-release:4.22.14-x86_64",
-		}}}); err != nil {
-			t.Errorf("encode Cincinnati graph: %v", err)
-		}
-	}))
-	defer cincSrv.Close()
-
-	cluster := &privatev1.Cluster{}
-	cluster.SetName("cluster-ystream")
-	cluster.SetNamespace("hyperfleet")
-	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.14", ChannelGroup: "candidate"}
-
-	channel := &privatev1.Channel{}
-	channel.SetName("candidate")
-	channel.Spec.FleetMinorVersion = "4.23"
-
-	storeClient := &mockStoreClient{cluster: cluster, channel: channel}
-	r := NewReconciler(NewCincinnatiClient(cincSrv.URL, "amd64"), newTestLogger(t), storeClient)
-
-	_, err := r.Reconcile(context.Background(), clusterReq("cluster-ystream"))
-
-	require.NoError(t, err)
-	require.Equal(t, "candidate-4.23", <-requestedChannel)
 }
 
 func TestReconciler_ClusterNotFound(t *testing.T) {
-	cincSrv := newMockCincinnati(t)
-	defer cincSrv.Close()
-
-	r, _ := buildReconciler(t, nil, cincSrv) // nil cluster → NotFound
-
-	result, err := r.Reconcile(context.Background(), clusterReq("cluster-404"))
-
+	r, _ := buildReconciler(t, nil, nil)
+	result, err := r.Reconcile(context.Background(), clusterReq("missing"))
 	require.NoError(t, err)
 	require.Equal(t, reconcile.Result{}, result)
+}
+
+func TestReconciler_ClusterGetError(t *testing.T) {
+	r, store := buildReconciler(t, nil, nil)
+	store.getErr = errors.New("API unavailable")
+	_, err := r.Reconcile(context.Background(), clusterReq("cluster"))
+	require.ErrorContains(t, err, "get cluster")
+	require.Nil(t, store.statusWriter)
 }
 
 func TestReconciler_VersionNotSet(t *testing.T) {
-	cincSrv := newMockCincinnati(t)
-	defer cincSrv.Close()
-
-	cluster := &privatev1.Cluster{}
-	cluster.SetName("cluster-3")
-	cluster.SetNamespace("hyperfleet")
-	// Release is nil — version not set
-
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
-
-	result, err := r.Reconcile(context.Background(), clusterReq("cluster-3"))
-
+	r, store := buildReconciler(t, &privatev1.Cluster{}, nil)
+	result, err := r.Reconcile(context.Background(), clusterReq("cluster"))
 	require.NoError(t, err)
 	require.Equal(t, reconcile.Result{}, result)
-	require.False(t, storeClient.updateCalled)
+	updated := store.statusWriter.captured.(*privatev1.Cluster)
+	require.Equal(t, "ReleaseVersionNotSet", meta.FindStatusCondition(updated.Status.Conditions, "VersionResolved").Reason)
 }
 
-func TestReconciler_VersionNotInCincinnati(t *testing.T) {
-	// Cincinnati returns an empty graph (no matching node).
-	cincSrv := newMockCincinnati(t)
-	defer cincSrv.Close()
+func TestReconciler_CatalogUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		release *privatev1.Version
+		reason  string
+	}{
+		{"missing", nil, "VersionNotFoundInCatalog"},
+		{"wrong channel", catalogVersion("4.22.14", "image", "fast"), "VersionNotInChannelGroup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := &privatev1.Cluster{}
+			cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.14"}
+			r, store := buildReconciler(t, cluster, tc.release)
+			result, err := r.Reconcile(context.Background(), clusterReq("cluster"))
+			require.NoError(t, err)
+			require.Equal(t, reconcile.Result{}, result)
+			updated := store.statusWriter.captured.(*privatev1.Cluster)
+			require.Nil(t, updated.Status.VersionResolution)
+			condition := meta.FindStatusCondition(updated.Status.Conditions, "VersionResolved")
+			require.Equal(t, metav1.ConditionFalse, condition.Status)
+			require.Equal(t, tc.reason, condition.Reason)
+			require.Contains(t, condition.Message, "4.22.14")
+		})
+	}
+}
 
+func TestReconciler_CatalogErrorIsRetryable(t *testing.T) {
 	cluster := &privatev1.Cluster{}
-	cluster.SetName("cluster-5")
-	cluster.SetNamespace("hyperfleet")
-	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.0-ec.4"}
+	cluster.Spec.Release.Version = "4.22.14"
+	r, store := buildReconciler(t, cluster, nil)
+	store.versionErr = errors.New("cache not synced")
+	_, err := r.Reconcile(context.Background(), clusterReq("cluster"))
+	require.ErrorIs(t, err, store.versionErr)
+	require.Nil(t, store.statusWriter, "infrastructure errors must not set a terminal False condition")
 
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
-
-	result, err := r.Reconcile(context.Background(), clusterReq("cluster-5"))
-
+	store.versionErr = nil
+	store.version = catalogVersion("4.22.14", "recovered-image", "stable")
+	_, err = r.Reconcile(context.Background(), clusterReq("cluster"))
 	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{RequeueAfter: requeueStable}, result)
-	require.False(t, storeClient.updateCalled)
+	updated := store.statusWriter.captured.(*privatev1.Cluster)
+	require.Equal(t, "recovered-image", updated.Status.VersionResolution.ReleaseImage)
 }
 
-func TestReconciler_CurrentVersionMissingFromAdvancedChannelRetries(t *testing.T) {
-	cincSrv := newMockCincinnati(t)
-	defer cincSrv.Close()
+func TestReconciler_StatusUpdateError(t *testing.T) {
+	for _, release := range []*privatev1.Version{nil, catalogVersion("4.22.14", "image", "stable")} {
+		cluster := &privatev1.Cluster{}
+		cluster.Spec.Release.Version = "4.22.14"
+		r, store := buildReconciler(t, cluster, release)
+		store.statusWriter = &mockStatusWriter{updateErr: errors.New("API unavailable")}
+		_, err := r.Reconcile(context.Background(), clusterReq("cluster"))
+		require.ErrorContains(t, err, "update cluster status")
+	}
+}
 
-	cluster := &privatev1.Cluster{}
-	cluster.SetName("cluster-advanced")
-	cluster.SetNamespace("hyperfleet")
+func TestReconciler_CatalogChangesPreservePinnedImage(t *testing.T) {
+	ctx := context.Background()
+	cluster := &privatev1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster", Namespace: "hyperfleet"}}
 	cluster.Spec.Release = privatev1.ReleaseSpec{Version: "4.22.14", ChannelGroup: "candidate"}
-
-	r, storeClient := buildReconciler(t, cluster, cincSrv)
-	storeClient.channel = &privatev1.Channel{}
-	storeClient.channel.Name = "candidate"
-	storeClient.channel.Spec.FleetMinorVersion = "4.23"
-
-	result, err := r.Reconcile(context.Background(), clusterReq("cluster-advanced"))
-
+	release := catalogVersion("4.22.14", "original", "candidate")
+	channel := &privatev1.Channel{ObjectMeta: metav1.ObjectMeta{Name: "candidate"}}
+	channel.Spec.FleetMinorVersion = "4.22"
+	apiClient := fake.NewClientBuilder().WithScheme(setup.NewScheme()).WithStatusSubresource(cluster).
+		WithObjects(cluster, release, channel).Build()
+	r := NewReconciler(newTestLogger(t), apiClient)
+	_, err := r.Reconcile(ctx, clusterReq("cluster"))
 	require.NoError(t, err)
-	require.Equal(t, reconcile.Result{RequeueAfter: requeueStable}, result)
-	require.True(t, storeClient.statusWriter.called)
-	require.False(t, storeClient.updateCalled)
+	release.Spec.ReleaseImage = "changed"
+	require.NoError(t, apiClient.Update(ctx, release))
+	_, err = r.Reconcile(ctx, clusterReq("cluster"))
+	require.NoError(t, err)
+	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+	require.Equal(t, "original", cluster.Status.VersionResolution.ReleaseImage)
+	channel.Spec.FleetMinorVersion = "4.24"
+	require.NoError(t, apiClient.Update(ctx, channel))
+	_, err = r.Reconcile(ctx, clusterReq("cluster"))
+	require.NoError(t, err)
+	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+	require.Equal(t, "candidate-4.23", cluster.Status.VersionResolution.CincinnatiChannel)
+	require.Equal(t, "original", cluster.Status.VersionResolution.ReleaseImage)
+	require.NoError(t, apiClient.Delete(ctx, release))
+	_, err = r.Reconcile(ctx, clusterReq("cluster"))
+	require.NoError(t, err)
+	require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+	require.Equal(t, "original", cluster.Status.VersionResolution.ReleaseImage)
+}
+
+func TestReconciler_CatalogRejectionRequiresResubmission(t *testing.T) {
+	for _, missing := range []bool{true, false} {
+		t.Run(fmt.Sprintf("missing=%t", missing), func(t *testing.T) {
+			ctx := context.Background()
+			cluster := &privatev1.Cluster{ObjectMeta: metav1.ObjectMeta{Name: "cluster", Namespace: "hyperfleet", Generation: 1}}
+			cluster.Spec.Release = privatev1.ReleaseSpec{Version: "5.0.0-ec.6", ChannelGroup: "dev-preview"}
+			release := catalogVersion("5.0.0-ec.6", "ci-image", "stable")
+			objects := []client.Object{cluster}
+			if !missing {
+				objects = append(objects, release)
+			}
+			apiClient := fake.NewClientBuilder().WithScheme(setup.NewScheme()).WithStatusSubresource(cluster).WithObjects(objects...).Build()
+			r := NewReconciler(newTestLogger(t), apiClient)
+			result, err := r.Reconcile(ctx, clusterReq("cluster"))
+			require.NoError(t, err)
+			require.Equal(t, reconcile.Result{}, result, "catalog rejection must not schedule a retry")
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+			require.Nil(t, cluster.Status.VersionResolution)
+			rejected := *meta.FindStatusCondition(cluster.Status.Conditions, "VersionResolved")
+			require.Equal(t, metav1.ConditionFalse, rejected.Status)
+			require.Equal(t, int64(1), rejected.ObservedGeneration)
+
+			release.Spec.ChannelGroups = []string{"dev-preview"}
+			if missing {
+				require.NoError(t, apiClient.Create(ctx, release))
+			} else {
+				require.NoError(t, apiClient.Update(ctx, release))
+			}
+			// A new reconciler simulates restart or an unrelated status/Channel event.
+			r = NewReconciler(newTestLogger(t), apiClient)
+			result, err = r.Reconcile(ctx, clusterReq("cluster"))
+			require.NoError(t, err)
+			require.Equal(t, reconcile.Result{}, result)
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+			require.Nil(t, cluster.Status.VersionResolution, "publishing the release must not revive a rejected request")
+			require.Equal(t, rejected, *meta.FindStatusCondition(cluster.Status.Conditions, "VersionResolved"))
+
+			// A spec change starts a new resolution attempt.
+			cluster.Spec.Release.ChannelGroup = "nightly"
+			cluster.Generation++
+			require.NoError(t, apiClient.Update(ctx, cluster))
+			release.Spec.ChannelGroups = append(release.Spec.ChannelGroups, "nightly")
+			require.NoError(t, apiClient.Update(ctx, release))
+			result, err = r.Reconcile(ctx, clusterReq("cluster"))
+			require.NoError(t, err)
+			require.Equal(t, requeueStable, result.RequeueAfter)
+			require.NoError(t, apiClient.Get(ctx, client.ObjectKeyFromObject(cluster), cluster))
+			require.Equal(t, "ci-image", cluster.Status.VersionResolution.ReleaseImage)
+			require.True(t, meta.IsStatusConditionTrue(cluster.Status.Conditions, "VersionResolved"))
+		})
+	}
 }
 
 func TestBuildChannel(t *testing.T) {

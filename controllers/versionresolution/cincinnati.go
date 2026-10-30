@@ -89,21 +89,3 @@ func (c *CincinnatiClient) ListReleases(ctx context.Context, channel string) ([]
 
 	return graph.Nodes, nil
 }
-
-// Resolve fetches the Cincinnati graph for the given channel and returns the
-// ReleaseInfo matching version. Returns nil, nil if the version is not found.
-func (c *CincinnatiClient) Resolve(ctx context.Context, version, channel string) (*ReleaseInfo, error) {
-	releases, err := c.ListReleases(ctx, channel)
-	if err != nil {
-		return nil, err
-	}
-
-	for i := range releases {
-		if releases[i].Version == version {
-			return &releases[i], nil
-		}
-	}
-
-	// Version not found — not an error, caller handles requeue.
-	return nil, nil
-}

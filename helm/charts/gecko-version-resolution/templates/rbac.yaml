@@ -6,6 +6,11 @@ metadata:
   labels:
     {{- include "gecko-version-resolution.labels" . | nindent 4 }}
 rules:
+  # The manager's cached Version reader needs list/watch to stay synchronized.
+  # Version events do not enqueue resolution or revive catalog rejections.
+  - apiGroups: ["gcp.managed.openshift.io"]
+    resources: ["versions"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["gcp.managed.openshift.io"]
     resources: ["clusters"]
     verbs: ["get", "list", "watch"]
