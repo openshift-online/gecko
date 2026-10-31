@@ -12,7 +12,7 @@ require (
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel/trace v1.47.0
 	google.golang.org/api v0.309.0
-	google.golang.org/grpc v1.84.0
+	google.golang.org/grpc v1.85.0
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
 	sigs.k8s.io/controller-runtime v0.25.2
