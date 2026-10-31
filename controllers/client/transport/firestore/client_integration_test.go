@@ -24,6 +24,7 @@ import (
 	"github.com/openshift-online/kube-applier-gcp/pkg/api/kubeapplier"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 const (
@@ -55,12 +56,12 @@ func newTestClient(t *testing.T) *fstransport.Client {
 	return fstransport.New(log, opts...)
 }
 
-func hcManifest(t *testing.T, clusterID, clusterName string) []byte {
+func hcManifest(t *testing.T, clusterName string) []byte {
 	t.Helper()
 	raw, err := json.Marshal(map[string]any{
 		"apiVersion": "hypershift.openshift.io/v1beta1",
 		"kind":       "HostedCluster",
-		"metadata":   map[string]any{"name": clusterName, "namespace": fmt.Sprintf("clusters-%s", clusterID)},
+		"metadata":   map[string]any{"name": clusterName, "namespace": fmt.Sprintf("clusters-%s", testClusterID)},
 	})
 	require.NoError(t, err)
 	return raw
@@ -177,7 +178,7 @@ func TestIntegration_Apply_WritesApplyAndReadDesires(t *testing.T) {
 	defer clearCollection(ctx, t, specsClient, "readdesires")
 
 	manifests := [][]byte{
-		hcManifest(t, testClusterID, "my-hc"),
+		hcManifest(t, "my-hc"),
 	}
 
 	_, err = c.Apply(ctx, testMCName, testGroupKey, manifests)
@@ -1015,7 +1016,7 @@ func TestIntegration_GetStatus_PendingWhenOneOfTwoApplyStatusesIsMissing(t *test
 	}()
 
 	manifests := [][]byte{
-		hcManifest(t, testClusterID, "my-hc"),
+		hcManifest(t, "my-hc"),
 		configMapManifest(t, "clusters-"+testClusterID, "cluster-config"),
 	}
 	_, err = c.Apply(ctx, testMCName, testGroupKey, manifests)
@@ -1084,7 +1085,7 @@ func TestIntegration_GetStatus_StaleWhenOneOfTwoReadStatusesIsMissing(t *testing
 	}()
 
 	manifests := [][]byte{
-		hcManifest(t, testClusterID, "my-hc"),
+		hcManifest(t, "my-hc"),
 		configMapManifest(t, "clusters-"+testClusterID, "cluster-config"),
 	}
 	_, err = c.Apply(ctx, testMCName, testGroupKey, manifests)
@@ -1300,4 +1301,128 @@ func TestIntegration_GetStatus_UsesSpecUpdateTimeForStaleness(t *testing.T) {
 	status, err = c.GetStatus(ctx, testMCName, testGroupKey)
 	require.NoError(t, err)
 	assert.False(t, status.Stale, "status observing the current spec should not be stale")
+}
+
+func TestIntegration_Apply_PreservesHostedClusterTags(t *testing.T) {
+	for _, initialTags := range []string{"", `[{"key":"env","value":"prod"}]`} {
+		t.Run("initial="+initialTags, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			c := newTestClient(t)
+			defer c.Close()
+			project := uniqueIntegrationProject("tags")
+			specs, err := firestore.NewClientWithDatabase(ctx, project, "specs", emulatorOpts(t)...)
+			require.NoError(t, err)
+			closeFirestoreClient(t, specs)
+			cleanupCollections(t, []*firestore.Client{specs}, "applydesires", "readdesires")
+			for i, desiredTags := range []string{initialTags, `[{"key":"env","value":"dev"}]`, "", initialTags} {
+				var obj map[string]any
+				require.NoError(t, json.Unmarshal(hcManifest(t, "tags-hc"), &obj))
+				require.NoError(t, unstructured.SetNestedField(obj, fmt.Sprintf("release-%d", i), "spec", "release", "image"))
+				if desiredTags != "" {
+					var tags any
+					require.NoError(t, json.Unmarshal([]byte(desiredTags), &tags))
+					require.NoError(t, unstructured.SetNestedField(obj, tags, "spec", "platform", "gcp", "resourceTags"))
+				}
+				raw, err := json.Marshal(obj)
+				require.NoError(t, err)
+				feedback, err := c.Apply(ctx, project, testGroupKey, [][]byte{raw})
+				require.NoError(t, err)
+				require.NotNil(t, feedback.ResourceTagsMismatch)
+				require.Equal(t, desiredTags != initialTags, *feedback.ResourceTagsMismatch)
+				snaps, err := specs.Collection("applydesires").Documents(ctx).GetAll()
+				require.NoError(t, err)
+				require.Len(t, snaps, 1)
+				stored := snaps[0].Data()["spec_kubeContent"].(map[string]any)
+				release, _, err := unstructured.NestedString(stored, "spec", "release", "image")
+				require.NoError(t, err)
+				require.Equal(t, fmt.Sprintf("release-%d", i), release)
+				tags, found, err := unstructured.NestedFieldCopy(stored, "spec", "platform", "gcp", "resourceTags")
+				require.NoError(t, err)
+				if initialTags == "" {
+					require.False(t, found)
+				} else {
+					require.True(t, found)
+					rawTags, err := json.Marshal(tags)
+					require.NoError(t, err)
+					require.JSONEq(t, initialTags, string(rawTags))
+				}
+			}
+		})
+	}
+}
+
+func TestIntegration_Apply_ConcurrentHostedClusterTags(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	defer c.Close()
+	project := uniqueIntegrationProject("tag-race")
+	specs, err := firestore.NewClientWithDatabase(ctx, project, "specs", emulatorOpts(t)...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specs)
+	cleanupCollections(t, []*firestore.Client{specs}, "applydesires", "readdesires")
+	type outcome struct {
+		feedback *transport.Status
+		err      error
+		value    string
+	}
+	results := make(chan outcome, 2)
+	start := make(chan struct{})
+	for _, value := range []string{"prod", "dev"} {
+		var obj map[string]any
+		require.NoError(t, json.Unmarshal(hcManifest(t, "race-hc"), &obj))
+		require.NoError(t, unstructured.SetNestedField(obj, []any{map[string]any{"key": "env", "value": value}}, "spec", "platform", "gcp", "resourceTags"))
+		raw, err := json.Marshal(obj)
+		require.NoError(t, err)
+		go func() {
+			<-start
+			feedback, err := c.Apply(ctx, project, testGroupKey, [][]byte{raw})
+			results <- outcome{feedback, err, value}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	require.NoError(t, first.err)
+	require.NoError(t, second.err)
+	require.NotNil(t, first.feedback.ResourceTagsMismatch)
+	require.NotNil(t, second.feedback.ResourceTagsMismatch)
+	require.NotEqual(t, *first.feedback.ResourceTagsMismatch, *second.feedback.ResourceTagsMismatch, "only one initial submission wins")
+	winner := first.value
+	if *first.feedback.ResourceTagsMismatch {
+		winner = second.value
+	}
+	snaps, err := specs.Collection("applydesires").Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, snaps, 1)
+	tags, found, err := unstructured.NestedSlice(snaps[0].Data(), "spec_kubeContent", "spec", "platform", "gcp", "resourceTags")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, winner, tags[0].(map[string]any)["value"])
+}
+
+func TestIntegration_Apply_MalformedExistingHostedCluster(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	defer c.Close()
+	project := uniqueIntegrationProject("tag-corrupt")
+	specs, err := firestore.NewClientWithDatabase(ctx, project, "specs", emulatorOpts(t)...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specs)
+	cleanupCollections(t, []*firestore.Client{specs}, "applydesires", "readdesires")
+	raw := hcManifest(t, "corrupt-hc")
+	_, err = c.Apply(ctx, project, testGroupKey, [][]byte{raw})
+	require.NoError(t, err)
+	snaps, err := specs.Collection("applydesires").Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, snaps, 1)
+	// A missing stored manifest must not be treated as a fresh submission.
+	_, err = snaps[0].Ref.Update(ctx, []firestore.Update{{Path: "spec_kubeContent", Value: firestore.Delete}})
+	require.NoError(t, err)
+	_, err = c.Apply(ctx, project, testGroupKey, [][]byte{raw})
+	require.ErrorContains(t, err, "existing HostedCluster desire has no manifest")
+	stored, err := snaps[0].Ref.Get(ctx)
+	require.NoError(t, err)
+	require.NotContains(t, stored.Data(), "spec_kubeContent", "failed preservation must not overwrite the document")
 }
