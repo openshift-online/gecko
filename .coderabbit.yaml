@@ -10,6 +10,31 @@ reviews:
     golangci-lint:
       enabled: false
   path_instructions:
+  - path: "{platform-api,orlop,controllers}/**"
+    instructions: |
+      ## API responses must not leak sensitive information
+
+      Review changes to API types, public-field markers, serialization, response and
+      error handling, and controller-written status for sensitive data reaching clients.
+      Check successful responses, list/watch payloads, metadata, status conditions,
+      error bodies, and response headers where applicable.
+
+      - Flag exposure of credentials or secrets, including passwords, bearer tokens,
+        API keys, private keys, connection strings with credentials, and secret contents.
+      - Customer-facing responses must not disclose internal RH infrastructure details,
+        such as management-cluster names, internal GCP project IDs, service names,
+        private network addresses, or internal resource paths. Customer-owned identifiers
+        and endpoints intentionally exposed by the public API contract are permitted.
+      - Flag raw backend/provider errors or object dumps copied into responses or status
+        messages when they can expose sensitive data. Require safe, actionable messages
+        and stable reason codes instead.
+      - Verify that public projections and conversions exclude private-only fields,
+        including nested fields and metadata; marking a field public requires checking
+        its values as well as its documentation against platform-api/API-CONVENTIONS.md.
+      - For changes that fix or could introduce a leak, require focused regression tests
+        demonstrating that sensitive values are absent from the affected responses,
+        including the relevant error or status path.
+
   - path: "platform-api/api/**"
     instructions: |
       Ensure API changes follow the conventions in platform-api/API-CONVENTIONS.md.
