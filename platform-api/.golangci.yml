@@ -107,6 +107,15 @@ linters:
           - unused
         text: 'var localSchemeBuilder is unused'
       # ── kubeapilinter ────────────────────────────────────────────────────
+      # optionalfields: ClusterMaintenanceSpec.Exclusions intentionally omits
+      # omitempty so that a public PUT with an empty list clears the stored
+      # exclusions. json.Unmarshal only overwrites a slice when its JSON key is
+      # present; omitempty suppresses the key for nil/empty slices, making
+      # clearing impossible via the public API.
+      - linters:
+          - kubeapilinter
+        text: 'optionalfields: field ClusterMaintenanceSpec\.Exclusions should have the omitempty tag'
+
       # arrayofstruct: NetworkingSpec.ClusterNetwork is an intentional
       # list-of-struct design where the struct members form a natural key/value
       # pair.
@@ -194,10 +203,15 @@ linters:
       # without omitempty. Kubernetes list types conventionally always include
       # items (even if empty), so omitempty should not be added; the correct
       # fix is to remove the +optional marker from Items on list types.
+      #
+      # ClusterMaintenanceSpec.Exclusions intentionally omits omitempty so
+      # that a public PUT with an empty list clears the stored exclusions
+      # (json.Unmarshal only overwrites a slice when its JSON key is present;
+      # omitempty suppresses the key for nil/empty slices, preventing clearing).
       - linters:
           - geckoconventions
         text: 'optional field must have omitempty'
-        path: 'api/private/v1/(platformrole|role|rolebinding)_types\.go'
+        path: 'api/private/v1/(cluster|platformrole|role|rolebinding)_types\.go'
     paths:
       - api/public/
 
