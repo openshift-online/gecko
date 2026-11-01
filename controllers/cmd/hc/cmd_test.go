@@ -2,10 +2,13 @@ package hc
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/openshift-online/gecko/controllers/util/setup"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,4 +44,14 @@ func TestNodePoolDeletePredicate(t *testing.T) {
 	require.False(t, predicate.Update(event.UpdateEvent{ObjectOld: nodePool, ObjectNew: nodePool}))
 	require.False(t, predicate.Generic(event.GenericEvent{Object: nodePool}))
 	require.True(t, predicate.Delete(event.DeleteEvent{Object: nodePool}))
+}
+
+func TestResourceTagsFlagFailsStartupOnInvalidConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resource-tags.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"not":"a tag list"}`), 0o600))
+	cmd := NewCommand(&setup.RootFlags{LogLevel: "error", LogFormat: "json"})
+	cmd.SetArgs([]string{"--resource-tags-file=" + path})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	require.ErrorContains(t, cmd.ExecuteContext(t.Context()), "load resource tags: parse resource tags file")
 }
