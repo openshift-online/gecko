@@ -14,12 +14,12 @@ import (
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-func quotaWithLimits(clusterLimit, nodepoolLimit int32) *privatev1.Quota {
+func quotaWithLimits(clusterLimit int32) *privatev1.Quota {
 	return &privatev1.Quota{
 		Spec: privatev1.QuotaSpec{
 			Resources: []privatev1.QuotaResourceSpec{
 				{Resource: "hostedclusters", Limit: clusterLimit},
-				{Resource: "nodepools", Limit: nodepoolLimit},
+				{Resource: "nodepools", Limit: 500},
 			},
 		},
 	}
@@ -107,7 +107,7 @@ func TestBuildHighUsageCondition_UpdatesTransitionTimeWhenStatusChanges(t *testi
 // ─── BuildQuotaStatus ─────────────────────────────────────────────────────────
 
 func TestBuildQuotaStatus_BelowLimit(t *testing.T) {
-	q := quotaWithLimits(50, 500)
+	q := quotaWithLimits(50)
 	s := BuildQuotaStatus(q, counts(10, 100), fixedNow())
 
 	require.Len(t, s.Resources, 2)
@@ -121,7 +121,7 @@ func TestBuildQuotaStatus_BelowLimit(t *testing.T) {
 }
 
 func TestBuildQuotaStatus_AtLimit_SetsReachedTime(t *testing.T) {
-	q := quotaWithLimits(10, 500)
+	q := quotaWithLimits(10)
 	now := fixedNow()
 	s := BuildQuotaStatus(q, counts(10, 0), now)
 
@@ -132,7 +132,7 @@ func TestBuildQuotaStatus_AtLimit_SetsReachedTime(t *testing.T) {
 
 func TestBuildQuotaStatus_ReachedTime_Preserved(t *testing.T) {
 	original := fixedNow()
-	q := quotaWithLimits(10, 500)
+	q := quotaWithLimits(10)
 	q.Status.Resources = []privatev1.QuotaResourceStatus{{
 		Resource:         "hostedclusters",
 		Current:          10,
@@ -149,7 +149,7 @@ func TestBuildQuotaStatus_ReachedTime_Preserved(t *testing.T) {
 
 func TestBuildQuotaStatus_ReachedTime_ClearedWhenBelowLimit(t *testing.T) {
 	original := fixedNow()
-	q := quotaWithLimits(10, 500)
+	q := quotaWithLimits(10)
 	q.Status.Resources = []privatev1.QuotaResourceStatus{{
 		Resource:         "hostedclusters",
 		Current:          10,
@@ -164,7 +164,7 @@ func TestBuildQuotaStatus_ReachedTime_ClearedWhenBelowLimit(t *testing.T) {
 
 func TestBuildQuotaStatus_HighUsage_At80Percent(t *testing.T) {
 	// 40/50 = 80% — exactly at threshold.
-	q := quotaWithLimits(50, 500)
+	q := quotaWithLimits(50)
 	s := BuildQuotaStatus(q, counts(40, 0), fixedNow())
 
 	cond := findHighUsageCondition(s.Conditions)
@@ -174,7 +174,7 @@ func TestBuildQuotaStatus_HighUsage_At80Percent(t *testing.T) {
 
 func TestBuildQuotaStatus_HighUsage_Below80Percent(t *testing.T) {
 	// 39/50 = 78% — just below threshold.
-	q := quotaWithLimits(50, 500)
+	q := quotaWithLimits(50)
 	s := BuildQuotaStatus(q, counts(39, 0), fixedNow())
 
 	cond := findHighUsageCondition(s.Conditions)
@@ -186,14 +186,14 @@ func TestBuildQuotaStatus_HighUsage_Below80Percent(t *testing.T) {
 
 func TestStatusEqual_Equal(t *testing.T) {
 	now := fixedNow()
-	q := quotaWithLimits(50, 500)
+	q := quotaWithLimits(50)
 	s := BuildQuotaStatus(q, counts(10, 100), now)
 	assert.True(t, StatusEqual(s, s))
 }
 
 func TestStatusEqual_DifferentCounts(t *testing.T) {
 	now := fixedNow()
-	q := quotaWithLimits(50, 500)
+	q := quotaWithLimits(50)
 	a := BuildQuotaStatus(q, counts(10, 100), now)
 	b := BuildQuotaStatus(q, counts(11, 100), now)
 	assert.False(t, StatusEqual(a, b))
@@ -201,7 +201,7 @@ func TestStatusEqual_DifferentCounts(t *testing.T) {
 
 func TestStatusEqual_DifferentConditionStatus(t *testing.T) {
 	now := fixedNow()
-	q := quotaWithLimits(50, 500)
+	q := quotaWithLimits(50)
 	// Below threshold.
 	a := BuildQuotaStatus(q, counts(10, 0), now)
 	// At threshold (80%).
@@ -211,7 +211,7 @@ func TestStatusEqual_DifferentConditionStatus(t *testing.T) {
 
 func TestStatusEqual_ReachedTimePresenceMatters(t *testing.T) {
 	now := fixedNow()
-	q := quotaWithLimits(10, 500)
+	q := quotaWithLimits(10)
 	// At limit → reachedTime set.
 	a := BuildQuotaStatus(q, counts(10, 0), now)
 	// Below limit → reachedTime nil.

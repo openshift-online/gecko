@@ -152,7 +152,7 @@ func (c *fakeClient) Apply(_ context.Context, _ runtime.ApplyConfiguration, _ ..
 }
 func (c *fakeClient) SubResource(_ string) client.SubResourceClient { return nil }
 func (c *fakeClient) Scheme() *runtime.Scheme                       { return nil }
-func (c *fakeClient) RESTMapper() apimeta.RESTMapper                 { return nil }
+func (c *fakeClient) RESTMapper() apimeta.RESTMapper                { return nil }
 func (c *fakeClient) GroupVersionKindFor(_ runtime.Object) (schema.GroupVersionKind, error) {
 	return schema.GroupVersionKind{}, nil
 }
@@ -715,8 +715,6 @@ func findCond(conds []metav1.Condition, condType string) *metav1.Condition {
 func fixedTimestamp() time.Time {
 	return time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 }
-
-
 
 // Compile-time check: fakeClient must implement client.Client.
 var _ client.Client = (*fakeClient)(nil)
