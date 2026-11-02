@@ -31,7 +31,7 @@ type RoleBindingList struct {
 	Items []RoleBinding `json:"items"`
 }
 
-// RoleBindingSpec identifies the principal, role, and optional grant condition.
+// RoleBindingSpec identifies the principal and role granted in a namespace.
 type RoleBindingSpec struct {
 	// +orlop:public
 	// +kubebuilder:validation:MinLength=1
