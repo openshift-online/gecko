@@ -59,7 +59,7 @@ func listBindings(ctx context.Context, stores Stores, platform bool, options sto
 		case *privatev1.RoleBinding:
 			binding = authorizationBinding{ObjectMeta: typed.ObjectMeta, Spec: typed.Spec}
 		case *privatev1.PlatformRoleBinding:
-			binding = authorizationBinding{ObjectMeta: typed.ObjectMeta, Spec: typed.Spec, platform: true}
+			binding = authorizationBinding{ObjectMeta: typed.ObjectMeta, Spec: privatev1.RoleBindingSpec(typed.Spec), platform: true}
 		default:
 			return nil, fmt.Errorf("binding store returned %T", object)
 		}

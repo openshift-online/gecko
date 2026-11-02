@@ -233,7 +233,7 @@ func TestPublicAPICatalogBindingAuthorization(t *testing.T) {
 	binding := &privatev1.PlatformRoleBinding{
 		TypeMeta:   metav1.TypeMeta{APIVersion: privatev1.GroupVersion.String(), Kind: "PlatformRoleBinding"},
 		ObjectMeta: metav1.ObjectMeta{Name: "authenticated-users"},
-		Spec: privatev1.RoleBindingSpec{Subject: "*", RoleRef: privatev1.RoleRef{
+		Spec: privatev1.PlatformRoleBindingSpec{Subject: "*", RoleRef: privatev1.RoleRef{
 			APIGroup: privatev1.GroupVersion.Group, Kind: "PlatformRole", Name: "authenticated-user",
 		}},
 	}

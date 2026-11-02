@@ -25,15 +25,14 @@ properties:
       A subject of "*" selects all authenticated principals.
     properties:
       condition:
-        description: |-
-          condition is an optional Cedar expression that further limits the
-          resources this binding grants access to.
+        description: condition is an optional Cedar expression that further limits
+          this grant.
         maxLength: 4096
         type: string
       roleRef:
         description: |-
-          RoleRef identifies either a cluster-scoped PlatformRole or a namespaced
-          Role. APIGroup is explicit so references cannot silently cross API groups.
+          roleRef identifies a PlatformRole in this API group. Its supported kind
+          is PlatformRole.
         properties:
           apiGroup:
             type: string
@@ -47,6 +46,8 @@ properties:
         - name
         type: object
       subject:
+        description: subject is a normalized email principal or "*" for all authenticated
+          principals.
         minLength: 1
         type: string
     required:

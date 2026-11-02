@@ -2,6 +2,8 @@ package v1
 
 import (
 	"context"
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -32,6 +34,7 @@ func TestPlatformRoleBindingValidation(t *testing.T) {
 		{name: "empty subject", wantErr: "spec.subject"},
 		{name: "domain restriction belongs in condition", subject: "*@example.com", wantErr: "spec.condition"},
 		{name: "namespace role", subject: "*", kind: "Role", wantErr: "kind must be PlatformRole"},
+		{name: "other role kind", subject: "*", kind: "ClusterRole", wantErr: "kind must be PlatformRole"},
 		{name: "foreign group", subject: "*", group: "other.example.com", wantErr: "spec.roleRef.apiGroup"},
 		{name: "missing role", subject: "*", role: "missing", wantErr: "does not exist"},
 		{name: "namespace set", subject: "*", namespace: "customer", wantErr: "empty namespace"},
@@ -42,7 +45,7 @@ func TestPlatformRoleBindingValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			binding := &PlatformRoleBinding{Spec: RoleBindingSpec{
+			binding := &PlatformRoleBinding{Spec: PlatformRoleBindingSpec{
 				Subject:   tt.subject,
 				RoleRef:   RoleRef{Kind: "PlatformRole", Name: "authenticated-user", APIGroup: GroupVersion.Group},
 				Condition: tt.condition,
@@ -75,6 +78,41 @@ func TestPlatformRoleBindingValidation(t *testing.T) {
 			}
 			if tt.name == "exact email" && binding.Spec.Subject != "alice@example.com" {
 				t.Fatalf("subject = %q, want normalized email", binding.Spec.Subject)
+			}
+		})
+	}
+}
+
+func TestPlatformRoleBindingSpecPreservesJSONShape(t *testing.T) {
+	condition := "true"
+	for _, tt := range []struct {
+		name      string
+		condition *string
+	}{
+		{name: "condition omitted"},
+		{name: "condition present", condition: &condition},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			platform := PlatformRoleBindingSpec{
+				Subject:   "alice@example.com",
+				RoleRef:   RoleRef{Kind: "PlatformRole", Name: "viewer", APIGroup: GroupVersion.Group},
+				Condition: tt.condition,
+			}
+			namespaced := RoleBindingSpec(platform)
+			jsonValue := func(value any) map[string]any {
+				t.Helper()
+				data, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result map[string]any
+				if err := json.Unmarshal(data, &result); err != nil {
+					t.Fatal(err)
+				}
+				return result
+			}
+			if got, want := jsonValue(platform), jsonValue(namespaced); !reflect.DeepEqual(got, want) {
+				t.Fatalf("platform spec JSON = %v, want existing binding shape %v", got, want)
 			}
 		})
 	}

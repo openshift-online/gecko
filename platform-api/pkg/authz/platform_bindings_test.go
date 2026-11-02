@@ -206,7 +206,7 @@ func TestMalformedPlatformBindingsGrantNothing(t *testing.T) {
 			seedPermissionRole(t, stores, "viewer", []string{"version.get", "cluster.get"})
 			binding := &privatev1.PlatformRoleBinding{
 				ObjectMeta: metav1.ObjectMeta{Name: "invalid"},
-				Spec:       privatev1.RoleBindingSpec{Subject: "*", RoleRef: privatev1.RoleRef{Kind: "PlatformRole", Name: "viewer", APIGroup: privatev1.GroupVersion.Group}},
+				Spec:       privatev1.PlatformRoleBindingSpec{Subject: "*", RoleRef: privatev1.RoleRef{Kind: "PlatformRole", Name: "viewer", APIGroup: privatev1.GroupVersion.Group}},
 			}
 			tt.mutate(binding)
 			if err := stores.PlatformRoleBindings.Create(ctx, binding); err != nil {
@@ -315,7 +315,7 @@ func seedPlatformBinding(t *testing.T, stores Stores, name, role, subject string
 	t.Helper()
 	binding := &privatev1.PlatformRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       privatev1.RoleBindingSpec{Subject: subject, RoleRef: privatev1.RoleRef{Kind: "PlatformRole", Name: role, APIGroup: privatev1.GroupVersion.Group}, Condition: condition},
+		Spec:       privatev1.PlatformRoleBindingSpec{Subject: subject, RoleRef: privatev1.RoleRef{Kind: "PlatformRole", Name: role, APIGroup: privatev1.GroupVersion.Group}, Condition: condition},
 	}
 	binding.SetGroupVersionKind(privatev1.GroupVersion.WithKind("PlatformRoleBinding"))
 	if err := stores.PlatformRoleBindings.Create(context.Background(), binding); err != nil {
