@@ -36,6 +36,7 @@ type QuotaList struct {
 
 	// items is the list of Quota objects.
 
+	// +kubebuilder:validation:MaxItems=100000
 	Items []Quota `json:"items"`
 }
 
@@ -46,6 +47,7 @@ type QuotaSpec struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=resource
+	// +kubebuilder:validation:MaxItems=2
 	Resources []QuotaResourceSpec `json:"resources,omitempty"`
 }
 
@@ -55,6 +57,7 @@ type QuotaResourceSpec struct {
 
 	// +required
 	// +kubebuilder:validation:Enum=hostedclusters;nodepools
+	// +kubebuilder:validation:MaxLength=63
 	Resource string `json:"resource"`
 
 	// limit is the effective enforced limit for this resource in the namespace.
@@ -78,6 +81,7 @@ type QuotaStatus struct {
 	// +listMapKey=type
 	// +patchStrategy=merge
 	// +patchMergeKey=type
+	// +kubebuilder:validation:MaxItems=10
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// resources contains per-resource consumption data.
@@ -85,6 +89,7 @@ type QuotaStatus struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=resource
+	// +kubebuilder:validation:MaxItems=2
 	Resources []QuotaResourceStatus `json:"resources,omitempty"`
 }
 
@@ -94,6 +99,7 @@ type QuotaResourceStatus struct {
 
 	// +required
 	// +kubebuilder:validation:Enum=hostedclusters;nodepools
+	// +kubebuilder:validation:MaxLength=63
 	Resource string `json:"resource"`
 
 	// current is the number of objects of this resource kind currently in the namespace.
@@ -117,6 +123,51 @@ type QuotaResourceStatus struct {
 //
 // QuotaRequest objects are immutable after creation. Approved requests cannot
 // be deleted via the public API, preserving them as an immutable audit record.
+//
+// Lifecycle (Approved condition / reason):
+//
+//	user creates QuotaRequest
+//	         │
+//	         ▼
+//	   ┌──────────────┐   newer request          ┌──────────────────────┐
+//	   │   Pending    │──for same resource──────► │      Superseded      │
+//	   │ (no conditions│                          │ Approved=Unknown     │
+//	   │   set yet)   │                          │ reason=Superseded    │
+//	   └──────┬───────┘                          │ Superseded=True      │
+//	          │                                  │ (deletable)          │
+//	          │ requestedLimit                   └──────────────────────┘
+//	          │ ≤ currentLimit
+//	          ├─────────────────────────────────► ┌──────────────────────┐
+//	          │                                  │    NotIncreasing     │
+//	          │                                  │ Approved=Unknown     │
+//	          │                                  │ reason=NotIncreasing │
+//	          │                                  │ (deletable)          │
+//	          │                                  └──────────────────────┘
+//	          │ requestedLimit
+//	          │ ≤ autoApproveThreshold
+//	          │ and > currentLimit
+//	          ├─────────────────────────────────► ┌──────────────────────┐
+//	          │                                  │    AutoApproved      │
+//	          │                                  │ Approved=True        │
+//	          │                                  │ reason=AutoApproved  │
+//	          │                                  │ (not deletable)      │
+//	          │                                  └──────────────────────┘
+//	          │ operator approves
+//	          │ (private API)
+//	          ├─────────────────────────────────► ┌──────────────────────┐
+//	          │                                  │  ManuallyApproved    │
+//	          │                                  │ Approved=True        │
+//	          │                                  │ reason=ManuallyAppr. │
+//	          │                                  │ (not deletable)      │
+//	          │                                  └──────────────────────┘
+//	          │ operator denies
+//	          │ (private API)
+//	          └─────────────────────────────────► ┌──────────────────────┐
+//	                                             │       Denied         │
+//	                                             │ Approved=False       │
+//	                                             │ reason=Denied        │
+//	                                             │ (deletable)          │
+//	                                             └──────────────────────┘
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Namespaced
@@ -146,6 +197,7 @@ type QuotaRequestList struct {
 
 	// items is the list of QuotaRequests.
 
+	// +kubebuilder:validation:MaxItems=100000
 	Items []QuotaRequest `json:"items"`
 }
 
@@ -157,6 +209,7 @@ type QuotaRequestSpec struct {
 
 	// +required
 	// +kubebuilder:validation:Enum=hostedclusters;nodepools
+	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="resource is immutable"
 	Resource string `json:"resource"`
 
@@ -205,6 +258,7 @@ type QuotaRequestStatus struct {
 	// +listMapKey=type
 	// +patchStrategy=merge
 	// +patchMergeKey=type
+	// +kubebuilder:validation:MaxItems=10
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// approvedLimit is the limit value that was granted.

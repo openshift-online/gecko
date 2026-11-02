@@ -38,11 +38,13 @@ properties:
               enum:
               - hostedclusters
               - nodepools
+              maxLength: 63
               type: string
           required:
           - limit
           - resource
           type: object
+        maxItems: 2
         type: array
         x-kubernetes-list-map-keys:
         - resource
@@ -106,6 +108,7 @@ properties:
           - status
           - type
           type: object
+        maxItems: 10
         type: array
         x-kubernetes-list-map-keys:
         - type
@@ -126,11 +129,13 @@ properties:
               enum:
               - hostedclusters
               - nodepools
+              maxLength: 63
               type: string
           required:
           - current
           - resource
           type: object
+        maxItems: 2
         type: array
         x-kubernetes-list-map-keys:
         - resource

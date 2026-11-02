@@ -1,12 +1,36 @@
-description: |-
-  QuotaRequest allows users to request a quota limit increase for a namespace.
-  Users submit a QuotaRequest with a justification; the QuotaRequest controller
-  automatically approves requests that fall within the namespace's
-  autoApproveThreshold. Requests that exceed the threshold remain Pending for
-  operator review.
-
-  QuotaRequest objects are immutable after creation. Approved requests cannot
-  be deleted via the public API, preserving them as an immutable audit record.
+description: "QuotaRequest allows users to request a quota limit increase for a namespace.\nUsers
+  submit a QuotaRequest with a justification; the QuotaRequest controller\nautomatically
+  approves requests that fall within the namespace's\nautoApproveThreshold. Requests
+  that exceed the threshold remain Pending for\noperator review.\n\nQuotaRequest objects
+  are immutable after creation. Approved requests cannot\nbe deleted via the public
+  API, preserving them as an immutable audit record.\n\nLifecycle (Approved condition
+  / reason):\n\n\tuser creates QuotaRequest\n\t         │\n\t         ▼\n\t   ┌──────────────┐
+  \  newer request          ┌──────────────────────┐\n\t   │   Pending    │──for same
+  resource──────► │      Superseded      │\n\t   │ (no conditions│                          │
+  Approved=Unknown     │\n\t   │   set yet)   │                          │ reason=Superseded
+  \   │\n\t   └──────┬───────┘                          │ Superseded=True      │\n\t
+  \         │                                  │ (deletable)          │\n\t          │
+  requestedLimit                   └──────────────────────┘\n\t          │ ≤ currentLimit\n\t
+  \         ├─────────────────────────────────► ┌──────────────────────┐\n\t          │
+  \                                 │    NotIncreasing     │\n\t          │                                  │
+  Approved=Unknown     │\n\t          │                                  │ reason=NotIncreasing
+  │\n\t          │                                  │ (deletable)          │\n\t          │
+  \                                 └──────────────────────┘\n\t          │ requestedLimit\n\t
+  \         │ ≤ autoApproveThreshold\n\t          │ and > currentLimit\n\t          ├─────────────────────────────────►
+  ┌──────────────────────┐\n\t          │                                  │    AutoApproved
+  \     │\n\t          │                                  │ Approved=True        │\n\t
+  \         │                                  │ reason=AutoApproved  │\n\t          │
+  \                                 │ (not deletable)      │\n\t          │                                  └──────────────────────┘\n\t
+  \         │ operator approves\n\t          │ (private API)\n\t          ├─────────────────────────────────►
+  ┌──────────────────────┐\n\t          │                                  │  ManuallyApproved
+  \   │\n\t          │                                  │ Approved=True        │\n\t
+  \         │                                  │ reason=ManuallyAppr. │\n\t          │
+  \                                 │ (not deletable)      │\n\t          │                                  └──────────────────────┘\n\t
+  \         │ operator denies\n\t          │ (private API)\n\t          └─────────────────────────────────►
+  ┌──────────────────────┐\n\t                                             │       Denied
+  \        │\n\t                                             │ Approved=False       │\n\t
+  \                                            │ reason=Denied        │\n\t                                             │
+  (deletable)          │\n\t                                             └──────────────────────┘"
 properties:
   apiVersion:
     description: |-
@@ -52,6 +76,7 @@ properties:
         enum:
         - hostedclusters
         - nodepools
+        maxLength: 63
         type: string
         x-kubernetes-validations:
         - message: resource is immutable
@@ -125,6 +150,7 @@ properties:
           - status
           - type
           type: object
+        maxItems: 10
         type: array
         x-kubernetes-list-map-keys:
         - type

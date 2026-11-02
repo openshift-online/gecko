@@ -37,6 +37,7 @@ type QuotaList struct {
 
 	// items is the list of Quota objects.
 	// +orlop:public
+	// +kubebuilder:validation:MaxItems=100000
 	Items []Quota `json:"items"`
 }
 
@@ -47,6 +48,7 @@ type QuotaSpec struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=resource
+	// +kubebuilder:validation:MaxItems=2
 	Resources []QuotaResourceSpec `json:"resources,omitempty"`
 }
 
@@ -56,6 +58,7 @@ type QuotaResourceSpec struct {
 	// +orlop:public
 	// +required
 	// +kubebuilder:validation:Enum=hostedclusters;nodepools
+	// +kubebuilder:validation:MaxLength=63
 	Resource string `json:"resource"`
 
 	// limit is the effective enforced limit for this resource in the namespace.
@@ -94,6 +97,7 @@ type QuotaStatus struct {
 	// +listMapKey=type
 	// +patchStrategy=merge
 	// +patchMergeKey=type
+	// +kubebuilder:validation:MaxItems=10
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// resources contains per-resource consumption data.
@@ -101,6 +105,7 @@ type QuotaStatus struct {
 	// +optional
 	// +listType=map
 	// +listMapKey=resource
+	// +kubebuilder:validation:MaxItems=2
 	Resources []QuotaResourceStatus `json:"resources,omitempty"`
 }
 
@@ -110,6 +115,7 @@ type QuotaResourceStatus struct {
 	// +orlop:public
 	// +required
 	// +kubebuilder:validation:Enum=hostedclusters;nodepools
+	// +kubebuilder:validation:MaxLength=63
 	Resource string `json:"resource"`
 
 	// current is the number of objects of this resource kind currently in the namespace.
@@ -208,6 +214,7 @@ type QuotaRequestList struct {
 
 	// items is the list of QuotaRequests.
 	// +orlop:public
+	// +kubebuilder:validation:MaxItems=100000
 	Items []QuotaRequest `json:"items"`
 }
 
@@ -219,6 +226,7 @@ type QuotaRequestSpec struct {
 	// +orlop:public
 	// +required
 	// +kubebuilder:validation:Enum=hostedclusters;nodepools
+	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="resource is immutable"
 	Resource string `json:"resource"`
 
@@ -308,6 +316,7 @@ type QuotaRequestStatus struct {
 	// +listMapKey=type
 	// +patchStrategy=merge
 	// +patchMergeKey=type
+	// +kubebuilder:validation:MaxItems=10
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
 	// approvedLimit is the limit value that was granted.

@@ -2,6 +2,7 @@ package quota
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -144,8 +145,8 @@ func TestQuotaExceededError_IsForbidden(t *testing.T) {
 
 func TestQuotaExceededError_HasReasonAndStructuredDetails(t *testing.T) {
 	err := QuotaExceededError("acme-prod", "hostedclusters", 12, 50)
-	se, ok := err.(*apierrors.StatusError)
-	if !ok {
+	var se *apierrors.StatusError
+	if !errors.As(err, &se) {
 		t.Fatalf("expected *apierrors.StatusError, got %T", err)
 	}
 
