@@ -73,7 +73,7 @@ func writeValidationError(w http.ResponseWriter, err error) {
 // 409 for immutable-record conflicts) without the handler needing to know about
 // the individual validator implementations.
 //
-// Unknown errors fall back to 400 Bad Request, preserving the existing behaviour
+// Unknown errors fall back to 400 Bad Request, preserving the existing behavior
 // for all validators that return plain fmt.Errorf values.
 func validationStatusCode(err error) int {
 	if err == nil {
