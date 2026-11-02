@@ -17,14 +17,13 @@ import (
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/types"
 	"github.com/openshift-online/gecko/platform-api/pkg/authn"
-	"github.com/openshift-online/gecko/platform-api/pkg/publicaccess"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
 	authorizationReasonInvalidPath             = "invalid_request_path"
-	authorizationReasonClusterScopedRequest    = "cluster_scoped_request"
+	authorizationReasonResourceScope           = "resource_scope_mismatch"
 	authorizationReasonUnsupportedOperation    = "unsupported_operation"
 	authorizationReasonListPermissionCheck     = "list_permission_check_failed"
 	authorizationReasonObjectContextBuild      = "object_context_build_failed"
@@ -55,11 +54,6 @@ func Middleware(authorizer *Authorizer, logger logr.Logger, resources []types.Re
 				next.ServeHTTP(w, r)
 				return
 			}
-			if publicaccess.IsAuthorizationExemptRequest(r, resources) {
-				next.ServeHTTP(w, r)
-				return
-			}
-
 			email, ok := authn.UserFromContext(r.Context())
 			if !ok {
 				writeForbidden(w)
@@ -77,10 +71,19 @@ func Middleware(authorizer *Authorizer, logger logr.Logger, resources []types.Re
 				writeForbidden(w)
 				return
 			}
-			if requestInfo.namespace == "" {
-				// Do not return resources across namespaces without an explicit
-				// namespace authorization strategy.
-				requestLogger.Info("authorization denied", "reason", authorizationReasonClusterScopedRequest)
+			resource, found := requestResource(resources, requestInfo)
+			if !found || resource.Namespaced != (requestInfo.namespace != "") {
+				// Namespace-less routes for namespaced resources remain denied.
+				requestLogger.Info("authorization denied", "reason", authorizationReasonResourceScope)
+				writeForbidden(w)
+				return
+			}
+			verb, err := verbForRequest(r.Method, requestInfo.named)
+			if r.Method == http.MethodGet && !requestInfo.named && r.URL.Query().Get(constants.QueryParamWatch) == "true" {
+				verb = "watch"
+			}
+			if err != nil || !resource.VerbAllowed(verb) {
+				requestLogger.Info("authorization denied", "reason", authorizationReasonUnsupportedOperation)
 				writeForbidden(w)
 				return
 			}
@@ -104,9 +107,20 @@ func Middleware(authorizer *Authorizer, logger logr.Logger, resources []types.Re
 }
 
 type parsedRequest struct {
+	group     string
+	version   string
 	namespace string
 	plural    string
 	named     bool
+}
+
+func requestResource(resources []types.ResourceInfo, request parsedRequest) (types.ResourceInfo, bool) {
+	for _, resource := range resources {
+		if resource.GVK.Group == request.group && resource.GVK.Version == request.version && resource.Plural == request.plural {
+			return resource, true
+		}
+	}
+	return types.ResourceInfo{}, false
 }
 
 func parseRequestPath(rawPath string) (parsedRequest, error) {
@@ -122,9 +136,11 @@ func parseRequestPath(rawPath string) (parsedRequest, error) {
 	if len(parts) < 4 || parts[0] != "apis" {
 		return parsedRequest{}, fmt.Errorf("not a public resource path")
 	}
-	// parts[1] is the API group and parts[2] is the version.
+	if parts[1] == "" || parts[2] == "" {
+		return parsedRequest{}, fmt.Errorf("API group and version are required")
+	}
 	i := 3
-	result := parsedRequest{}
+	result := parsedRequest{group: parts[1], version: parts[2]}
 	if parts[i] == "namespaces" {
 		if len(parts) <= i+2 || parts[i+1] == "" {
 			return parsedRequest{}, fmt.Errorf("namespace and resource are required")
@@ -161,13 +177,10 @@ func parseRequestPath(rawPath string) (parsedRequest, error) {
 	if i != len(parts) {
 		return parsedRequest{}, fmt.Errorf("invalid resource path")
 	}
-	if result.namespace == "" && result.named {
-		return parsedRequest{}, fmt.Errorf("cluster-wide named resources are not public")
-	}
 	return result, nil
 }
 
-// handleListAuthorization authorizes a namespaced collection GET request.
+// handleListAuthorization authorizes a collection GET request.
 // Binding conditions are evaluated only for each returned object.
 func handleListAuthorization(
 	w http.ResponseWriter,
@@ -179,7 +192,7 @@ func handleListAuthorization(
 	action Action,
 	request parsedRequest,
 ) {
-	allowed, err := authorizer.HasNamespacePermission(r.Context(), email, action, request.namespace)
+	allowed, err := authorizer.HasPermission(r.Context(), email, action, request.namespace)
 	if err != nil {
 		logger.Error(errAuthorizationListPermissionCheck, "authorization denied", "resource", request.plural, "action", string(action), "reason", authorizationReasonListPermissionCheck)
 		writeForbidden(w)
@@ -191,13 +204,17 @@ func handleListAuthorization(
 	}
 
 	failures := &listAuthorizationFailures{}
-	ctx := handlers.WithItemFilter(r.Context(), itemFilter(authorizer, email, action, request.plural, r.Method, failures))
+	ctx := handlers.WithItemFilter(r.Context(), itemFilter(authorizer, email, action, request.namespace, request.plural, r.Method, failures))
 	next.ServeHTTP(w, r.WithContext(ctx))
 	failures.log(logger, request.plural, action)
 }
 
-func itemFilter(authorizer *Authorizer, email string, action Action, resourcePlural, method string, failures *listAuthorizationFailures) storage.ItemFilter {
+func itemFilter(authorizer *Authorizer, email string, action Action, namespace, resourcePlural, method string, failures *listAuthorizationFailures) storage.ItemFilter {
 	return func(ctx context.Context, object client.Object) (bool, error) {
+		if object == nil || object.GetNamespace() != namespace {
+			failures.contextBuild.Add(1)
+			return false, nil
+		}
 		switch authorizeListItem(ctx, authorizer, email, action, resourcePlural, method, object) {
 		case listItemAuthorizationAllowed:
 			return true, nil
@@ -223,7 +240,10 @@ const (
 )
 
 func authorizeListItem(ctx context.Context, authorizer *Authorizer, email string, action Action, resourcePlural, method string, object client.Object) listItemAuthorizationOutcome {
-	if object == nil || object.GetNamespace() == "" {
+	if object == nil {
+		return listItemAuthorizationContextBuildFailed
+	}
+	if _, valid := resourceForAction(action, object.GetNamespace()); !valid {
 		return listItemAuthorizationContextBuildFailed
 	}
 	requestContext, err := CedarContextForObject(object, resourcePlural, method)

@@ -5,7 +5,6 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster
 // +orlop:public-verbs: get,list
-// +orlop:authorization-exempt-verbs: get,list
 // +kubebuilder:subresource:status
 // Channel provides clients with the default version for cluster installation
 // and platform controls for supported releases and automatic fleet upgrades.

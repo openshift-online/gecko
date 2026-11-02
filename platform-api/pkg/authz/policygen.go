@@ -21,12 +21,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-var errInvalidAuthorizationBindingPolicy = errors.New("authorization binding policy is invalid")
+var (
+	errInvalidAuthorizationBindingPolicy    = errors.New("authorization binding policy is invalid")
+	errInvalidAuthorizationBindingReference = errors.New("authorization binding reference is invalid")
+)
 
 // GeneratePolicySet builds the complete Cedar policy set from the current
-// authorization resources. Each RoleBinding gets its own policy so bindings
-// for the same role cannot accidentally share conditions or principals when
-// condition-aware authorization is added.
+// authorization resources. Each binding gets its own policy so bindings for
+// the same role cannot accidentally share conditions or principals.
 func GeneratePolicySet(ctx context.Context, stores Stores) (*cedar.PolicySet, error) {
 	return generatePolicySet(ctx, stores, logr.Discard())
 }
@@ -40,10 +42,15 @@ func generatePolicySet(ctx context.Context, stores Stores, logger logr.Logger) (
 	if err != nil {
 		return nil, fmt.Errorf("list PlatformRoles: %w", err)
 	}
-	bindings, err := listRoleBindings(ctx, stores)
+	bindings, err := listBindings(ctx, stores, false, storage.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("list RoleBindings: %w", err)
 	}
+	platformBindings, err := listBindings(ctx, stores, true, storage.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list PlatformRoleBindings: %w", err)
+	}
+	bindings = append(bindings, platformBindings...)
 
 	rolesByNamespace := make(map[string]privatev1.Role, len(roles))
 	for _, role := range roles {
@@ -63,17 +70,13 @@ func generatePolicySet(ctx context.Context, stores Stores, logger logr.Logger) (
 
 	policies := cedar.NewPolicySet()
 	invalidPolicyCount := 0
+	invalidReferenceCount := 0
 	for _, binding := range bindings {
 		permissions, err := permissionsForBinding(binding, rolesByNamespace, platformRolesByName)
 		if err != nil {
 			// A dangling or malformed binding must not block policy updates
 			// for every other binding. The invalid binding grants nothing.
-			logger.Error(err, "skipping invalid authorization binding",
-				"namespace", binding.Namespace,
-				"binding", binding.Name,
-				"roleKind", binding.Spec.RoleRef.Kind,
-				"roleName", binding.Spec.RoleRef.Name,
-			)
+			invalidReferenceCount++
 			continue
 		}
 		policyID := cedar.PolicyID(bindingPolicyID(binding))
@@ -84,7 +87,13 @@ func generatePolicySet(ctx context.Context, stores Stores, logger logr.Logger) (
 			invalidPolicyCount++
 			continue
 		}
-		policies.Add(policyID, policy)
+		if policy != nil {
+			policies.Add(policyID, policy)
+		}
+	}
+	if invalidReferenceCount > 0 {
+		logger.Error(errInvalidAuthorizationBindingReference, "skipped invalid authorization binding references",
+			"reason", "invalid_binding_reference", "failureCount", invalidReferenceCount)
 	}
 	if invalidPolicyCount > 0 {
 		logger.Error(errInvalidAuthorizationBindingPolicy, "skipped invalid authorization binding policies",
@@ -96,21 +105,28 @@ func generatePolicySet(ctx context.Context, stores Stores, logger logr.Logger) (
 	return policies, nil
 }
 
-func policyForBinding(binding privatev1.RoleBinding, permissions []string) (*cedar.Policy, error) {
+func policyForBinding(binding authorizationBinding, permissions []string) (*cedar.Policy, error) {
+	if err := privatev1.ValidateRoleBindingCondition(binding.Spec.Condition); err != nil {
+		return nil, err
+	}
 	actions := make([]string, 0, len(permissions))
 	for _, permission := range permissions {
 		action, ok := actionForPermission(permission)
 		if !ok {
 			return nil, fmt.Errorf("unknown permission %q", permission)
 		}
-		actions = append(actions, "Action::"+strconv.Quote(string(action)))
+		if isPlatformAction(action) == binding.platform {
+			actions = append(actions, "Action::"+strconv.Quote(string(action)))
+		}
+	}
+	if len(actions) == 0 {
+		return nil, nil
 	}
 	sort.Strings(actions)
 
-	roleID := fmt.Sprintf("%s/%s/%s", binding.Namespace, binding.Spec.RoleRef.Name, binding.Name)
 	conditions := []string{
-		fmt.Sprintf("principal in NamespaceRole::%s", strconv.Quote(roleID)),
-		fmt.Sprintf("resource in Namespace::%s", strconv.Quote(binding.Namespace)),
+		fmt.Sprintf("principal in %s", binding.roleUID()),
+		fmt.Sprintf("resource in %s", scopeResource(binding.Namespace)),
 	}
 	if binding.Spec.Condition != nil && strings.TrimSpace(*binding.Spec.Condition) != "" {
 		conditions = append(conditions, "("+*binding.Spec.Condition+")")
@@ -136,11 +152,14 @@ when {
 	return policies[0], nil
 }
 
-func permissionsForBinding(binding privatev1.RoleBinding, roles map[string]privatev1.Role, platformRoles map[string]privatev1.PlatformRole) ([]string, error) {
+func permissionsForBinding(binding authorizationBinding, roles map[string]privatev1.Role, platformRoles map[string]privatev1.PlatformRole) ([]string, error) {
 	if binding.Spec.RoleRef.APIGroup != privatev1.GroupVersion.Group {
 		return nil, fmt.Errorf("RoleBinding %s/%s references unsupported API group %q", binding.Namespace, binding.Name, binding.Spec.RoleRef.APIGroup)
 	}
 	var permissions []string
+	if binding.platform && binding.Spec.RoleRef.Kind != "PlatformRole" {
+		return nil, fmt.Errorf("PlatformRoleBinding must reference a PlatformRole")
+	}
 	switch binding.Spec.RoleRef.Kind {
 	case "PlatformRole":
 		role, ok := platformRoles[binding.Spec.RoleRef.Name]
@@ -163,7 +182,10 @@ func permissionsForBinding(binding privatev1.RoleBinding, roles map[string]priva
 	return permissions, nil
 }
 
-func bindingPolicyID(binding privatev1.RoleBinding) string {
+func bindingPolicyID(binding authorizationBinding) string {
+	if binding.platform {
+		return fmt.Sprintf("platformrole:%s:platformbinding:%s", binding.Spec.RoleRef.Name, binding.Name)
+	}
 	prefix := "role"
 	if binding.Spec.RoleRef.Kind == "PlatformRole" {
 		prefix = "platformrole"
@@ -199,22 +221,6 @@ func listPlatformRoles(ctx context.Context, stores Stores) ([]privatev1.Platform
 			return nil, fmt.Errorf("platform role store returned %T", object)
 		}
 		result = append(result, *role)
-	}
-	return result, nil
-}
-
-func listRoleBindings(ctx context.Context, stores Stores) ([]privatev1.RoleBinding, error) {
-	objects, err := listObjects(ctx, stores.RoleBindings, storage.ListOptions{}, stores.Scheme, privatev1.GroupVersion.WithKind("RoleBinding"))
-	if err != nil {
-		return nil, err
-	}
-	result := make([]privatev1.RoleBinding, 0, len(objects))
-	for _, object := range objects {
-		binding, ok := object.(*privatev1.RoleBinding)
-		if !ok {
-			return nil, fmt.Errorf("role binding store returned %T", object)
-		}
-		result = append(result, *binding)
 	}
 	return result, nil
 }

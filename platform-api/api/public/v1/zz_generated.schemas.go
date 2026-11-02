@@ -44,8 +44,6 @@ var ChannelResourceInfo = types.ResourceInfo{
 	SchemaYAML: ChannelSchemaYAML,
 	// Generated from // +orlop:public-verbs annotation.
 	Verbs: []string{"get", "list"},
-	// Generated from // +orlop:authorization-exempt-verbs annotation.
-	AuthorizationExemptVerbs: []string{"get", "list"},
 }
 
 // ClusterResourceInfo describes the Cluster resource type.
@@ -127,8 +125,6 @@ var VersionResourceInfo = types.ResourceInfo{
 	SchemaYAML: VersionSchemaYAML,
 	// Generated from // +orlop:public-verbs annotation.
 	Verbs: []string{"get", "list"},
-	// Generated from // +orlop:authorization-exempt-verbs annotation.
-	AuthorizationExemptVerbs: []string{"get", "list"},
 }
 
 // GetResourceInfos returns ResourceInfo definitions for all types in this package.

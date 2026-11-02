@@ -52,19 +52,20 @@ func (a *Authorizer) Reload(ctx context.Context) error {
 	return nil
 }
 
-// Authorize evaluates one namespace-scoped public API request without
+// Authorize evaluates one public API request without
 // object-specific Cedar context.
 func (a *Authorizer) Authorize(ctx context.Context, email string, action Action, namespace string) (bool, error) {
 	return a.AuthorizeWithContext(ctx, email, action, namespace, cedar.NewRecord(nil))
 }
 
-// AuthorizeWithContext evaluates one namespace-scoped public API request with
-// the supplied effective object state.
+// AuthorizeWithContext evaluates one public API request with effective object
+// state. An empty namespace denotes platform scope only for platform actions.
 func (a *Authorizer) AuthorizeWithContext(ctx context.Context, email string, action Action, namespace string, requestContext cedar.Record) (bool, error) {
 	if email == "" {
 		return false, fmt.Errorf("principal is empty")
 	}
-	if namespace == "" {
+	resource, valid := resourceForAction(action, namespace)
+	if !valid {
 		return false, nil
 	}
 	entities, err := entitiesForUser(ctx, a.stores, a.cache, email)
@@ -78,7 +79,7 @@ func (a *Authorizer) AuthorizeWithContext(ctx context.Context, email string, act
 	decision, diagnostic := cedar.Authorize(policies, entities, cedar.Request{
 		Principal: cedar.NewEntityUID("User", cedar.String(email)),
 		Action:    cedar.NewEntityUID("Action", cedar.String(action)),
-		Resource:  cedar.NewEntityUID("Namespace", cedar.String(namespace)),
+		Resource:  resource,
 		Context:   requestContext,
 	})
 	if decision == cedar.Allow {

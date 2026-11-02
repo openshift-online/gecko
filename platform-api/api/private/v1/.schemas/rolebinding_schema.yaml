@@ -21,7 +21,8 @@ properties:
   metadata:
     type: object
   spec:
-    description: RoleBindingSpec identifies the principal and role granted in a namespace.
+    description: RoleBindingSpec identifies the principal, role, and optional grant
+      condition.
     properties:
       condition:
         description: |-

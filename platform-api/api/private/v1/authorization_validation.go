@@ -39,6 +39,10 @@ var validAuthorizationPermissions = map[string]struct{}{
 	"role.get":           {},
 	"role.update":        {},
 	"role.delete":        {},
+	"version.get":        {},
+	"version.list":       {},
+	"channel.get":        {},
+	"channel.list":       {},
 }
 
 // ValidAuthorizationPermissions returns the complete set of permissions
@@ -161,7 +165,7 @@ func (r *RoleBinding) ValidateCreate(ctx context.Context) error {
 	if err := validateRoleReference(ctx, r.Namespace, r.Spec.RoleRef); err != nil {
 		return err
 	}
-	return validateRoleBindingCondition(r.Spec.Condition)
+	return ValidateRoleBindingCondition(r.Spec.Condition)
 }
 
 func (r *RoleBinding) ValidateUpdate(ctx context.Context, oldObj runtime.Object) error {
@@ -174,10 +178,45 @@ func (r *RoleBinding) ValidateUpdate(ctx context.Context, oldObj runtime.Object)
 	if err := validateRoleReference(ctx, r.Namespace, r.Spec.RoleRef); err != nil {
 		return err
 	}
-	return validateRoleBindingCondition(r.Spec.Condition)
+	return ValidateRoleBindingCondition(r.Spec.Condition)
 }
 
 func (r *RoleBinding) ValidateDelete(_ context.Context) error { return nil }
+
+func (r *PlatformRoleBinding) ValidateCreate(ctx context.Context) error {
+	if r.Namespace != "" {
+		return fmt.Errorf("PlatformRoleBinding must have an empty namespace")
+	}
+	subject := strings.TrimSpace(r.Spec.Subject)
+	if subject == "*" {
+		r.Spec.Subject = subject
+	} else {
+		if strings.Contains(subject, "*") {
+			return fmt.Errorf("spec.subject must be an email or *; express additional restrictions in spec.condition")
+		}
+		canonical, err := NormalizeEmail(subject)
+		if err != nil {
+			return fmt.Errorf("spec.subject: %w", err)
+		}
+		r.Spec.Subject = canonical
+	}
+	if r.Spec.RoleRef.Kind != "PlatformRole" {
+		return fmt.Errorf("spec.roleRef.kind must be PlatformRole")
+	}
+	if err := validateRoleReference(ctx, "", r.Spec.RoleRef); err != nil {
+		return err
+	}
+	return ValidateRoleBindingCondition(r.Spec.Condition)
+}
+
+func (r *PlatformRoleBinding) ValidateUpdate(ctx context.Context, oldObj runtime.Object) error {
+	if _, ok := oldObj.(*PlatformRoleBinding); !ok {
+		return fmt.Errorf("expected old object to be *PlatformRoleBinding, got %T", oldObj)
+	}
+	return r.ValidateCreate(ctx)
+}
+
+func (r *PlatformRoleBinding) ValidateDelete(_ context.Context) error { return nil }
 
 func (r *RoleBinding) validateSubject() error {
 	canonical, err := NormalizeEmail(r.Spec.Subject)
@@ -228,7 +267,10 @@ func validateRoleReference(ctx context.Context, namespace string, ref RoleRef) e
 	return nil
 }
 
-func validateRoleBindingCondition(condition *string) error {
+// ValidateRoleBindingCondition validates the optional expression independently
+// of generated binding constraints. Both admission and policy generation use it
+// so malformed stored expressions cannot escape their binding's restrictions.
+func ValidateRoleBindingCondition(condition *string) error {
 	if condition == nil || strings.TrimSpace(*condition) == "" {
 		return nil
 	}
@@ -281,3 +323,4 @@ func policyReferencesNamespaceEntity(policy *cedar.Policy) bool {
 var _ orloptypes.CustomValidator = (*Role)(nil)
 var _ orloptypes.CustomValidator = (*PlatformRole)(nil)
 var _ orloptypes.CustomValidator = (*RoleBinding)(nil)
+var _ orloptypes.CustomValidator = (*PlatformRoleBinding)(nil)

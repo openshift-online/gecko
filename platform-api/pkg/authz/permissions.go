@@ -29,6 +29,10 @@ const (
 	GetRole           Action = "GetRole"
 	UpdateRole        Action = "UpdateRole"
 	DeleteRole        Action = "DeleteRole"
+	GetVersion        Action = "GetVersion"
+	ListVersions      Action = "ListVersions"
+	GetChannel        Action = "GetChannel"
+	ListChannels      Action = "ListChannels"
 )
 
 var permissionActions = map[string]Action{
@@ -52,6 +56,19 @@ var permissionActions = map[string]Action{
 	"role.get":           GetRole,
 	"role.update":        UpdateRole,
 	"role.delete":        DeleteRole,
+	"version.get":        GetVersion,
+	"version.list":       ListVersions,
+	"channel.get":        GetChannel,
+	"channel.list":       ListChannels,
+}
+
+func isPlatformAction(action Action) bool {
+	switch action {
+	case GetVersion, ListVersions, GetChannel, ListChannels:
+		return true
+	default:
+		return false
+	}
 }
 
 func actionForPermission(permission string) (Action, bool) {
@@ -60,38 +77,49 @@ func actionForPermission(permission string) (Action, bool) {
 }
 
 func actionForRequest(method, plural string, named bool) (Action, error) {
-	var verb string
-	switch method {
-	case http.MethodGet:
-		if named {
-			verb = "get"
-		} else {
-			verb = "list"
-		}
-	case http.MethodPost:
-		if named {
-			return "", fmt.Errorf("POST is not valid for a named %s resource", plural)
-		}
-		verb = "create"
-	case http.MethodPut, http.MethodPatch:
-		if !named {
-			return "", fmt.Errorf("%s is not valid for a collection", method)
-		}
-		verb = "update"
-	case http.MethodDelete:
-		if !named {
-			return "", fmt.Errorf("DELETE is not valid for a collection")
-		}
-		verb = "delete"
-	default:
-		return "", fmt.Errorf("unsupported HTTP method %q", method)
+	verb, err := verbForRequest(method, named)
+	if err != nil {
+		return "", err
 	}
-
+	if verb == "patch" {
+		verb = "update"
+	}
 	action, ok := actionForPermission(pluralToResource(plural) + "." + verb)
 	if !ok {
 		return "", fmt.Errorf("unsupported public resource %q", plural)
 	}
 	return action, nil
+}
+
+func verbForRequest(method string, named bool) (string, error) {
+	switch method {
+	case http.MethodGet:
+		if named {
+			return "get", nil
+		}
+		return "list", nil
+	case http.MethodPost:
+		if named {
+			return "", fmt.Errorf("POST is not valid for a named resource")
+		}
+		return "create", nil
+	case http.MethodPut, http.MethodPatch:
+		if !named {
+			return "", fmt.Errorf("%s is not valid for a collection", method)
+		}
+		if method == http.MethodPatch {
+			return "patch", nil
+		}
+		return "update", nil
+	case http.MethodDelete:
+		if !named {
+			return "", fmt.Errorf("DELETE is not valid for a collection")
+		}
+		return "delete", nil
+	default:
+		return "", fmt.Errorf("unsupported HTTP method %q", method)
+	}
+
 }
 
 func pluralToResource(plural string) string {
@@ -104,6 +132,10 @@ func pluralToResource(plural string) string {
 		return "role"
 	case "rolebindings":
 		return "rolebinding"
+	case "versions":
+		return "version"
+	case "channels":
+		return "channel"
 	default:
 		return plural
 	}

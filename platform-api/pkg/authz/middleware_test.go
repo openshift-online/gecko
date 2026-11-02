@@ -17,19 +17,17 @@ import (
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func TestMiddlewareAllowsAuthorizationExemptCatalogGets(t *testing.T) {
+func TestMiddlewareRequiresCatalogAuthorizer(t *testing.T) {
 	resources := []types.ResourceInfo{
 		{
-			GVK:                      runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Version"},
-			Plural:                   "versions",
-			Verbs:                    []string{"get", "list"},
-			AuthorizationExemptVerbs: []string{"get", "list"},
+			GVK:    runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Version"},
+			Plural: "versions",
+			Verbs:  []string{"get", "list"},
 		},
 		{
-			GVK:                      runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Channel"},
-			Plural:                   "channels",
-			Verbs:                    []string{"get", "list"},
-			AuthorizationExemptVerbs: []string{"get", "list"},
+			GVK:    runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Channel"},
+			Plural: "channels",
+			Verbs:  []string{"get", "list"},
 		},
 	}
 	tests := []struct {
@@ -38,18 +36,19 @@ func TestMiddlewareAllowsAuthorizationExemptCatalogGets(t *testing.T) {
 		path   string
 		status int
 	}{
-		{name: "list versions", method: http.MethodGet, path: "/apis/gcp.managed.openshift.io/v1/versions", status: http.StatusNoContent},
-		{name: "get version", method: http.MethodGet, path: "/apis/gcp.managed.openshift.io/v1/versions/4.22.1", status: http.StatusNoContent},
-		{name: "list channels", method: http.MethodGet, path: "/apis/gcp.managed.openshift.io/v1/channels", status: http.StatusNoContent},
-		{name: "get channel", method: http.MethodGet, path: "/apis/gcp.managed.openshift.io/v1/channels/stable", status: http.StatusNoContent},
+		{name: "list versions", method: http.MethodGet, path: "/apis/gcp.managed.openshift.io/v1/versions", status: http.StatusForbidden},
+		{name: "get version", method: http.MethodGet, path: "/apis/gcp.managed.openshift.io/v1/versions/4.22.1", status: http.StatusForbidden},
+		{name: "list channels", method: http.MethodGet, path: "/apis/gcp.managed.openshift.io/v1/channels", status: http.StatusForbidden},
+		{name: "get channel", method: http.MethodGet, path: "/apis/gcp.managed.openshift.io/v1/channels/stable", status: http.StatusForbidden},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			request := httptest.NewRequestWithContext(context.Background(), tt.method, tt.path, nil)
+			ctx := authn.WithUser(context.Background(), "alice@example.com")
+			request := httptest.NewRequestWithContext(ctx, tt.method, tt.path, nil)
 			response := httptest.NewRecorder()
 			Middleware(nil, logr.Discard(), resources)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusNoContent)
+				t.Fatal("catalog request reached the handler without an authorizer")
 			})).ServeHTTP(response, request)
 			if response.Code != tt.status {
 				t.Fatalf("status = %d, want %d", response.Code, tt.status)
@@ -58,12 +57,11 @@ func TestMiddlewareAllowsAuthorizationExemptCatalogGets(t *testing.T) {
 	}
 }
 
-func TestMiddlewareDeniesNonExemptClusterScopedRequests(t *testing.T) {
+func TestMiddlewareDeniesUnsupportedPlatformRequests(t *testing.T) {
 	resources := []types.ResourceInfo{{
-		GVK:                      runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Version"},
-		Plural:                   "versions",
-		Verbs:                    []string{"get", "list"},
-		AuthorizationExemptVerbs: []string{"get", "list"},
+		GVK:    runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Version"},
+		Plural: "versions",
+		Verbs:  []string{"get", "list"},
 	}}
 	tests := []struct {
 		name   string
@@ -91,16 +89,16 @@ func TestMiddlewareDeniesNonExemptClusterScopedRequests(t *testing.T) {
 	}
 }
 
-func TestMiddlewareDoesNotBypassAuthorizationForClusterOrNodePool(t *testing.T) {
+func TestMiddlewareRequiresAuthorizationForClusterOrNodePool(t *testing.T) {
 	resources := []types.ResourceInfo{
 		{
-			GVK:                      runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Version"},
-			Plural:                   "versions",
-			AuthorizationExemptVerbs: []string{"get", "list"},
+			GVK:    runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Version"},
+			Plural: "versions",
 		},
 		{
-			GVK:    runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Cluster"},
-			Plural: "clusters",
+			GVK:        runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "Cluster"},
+			Plural:     "clusters",
+			Namespaced: true,
 		},
 		{
 			GVK:        runtimeschema.GroupVersionKind{Group: "gcp.managed.openshift.io", Version: "v1", Kind: "NodePool"},
@@ -118,7 +116,7 @@ func TestMiddlewareDoesNotBypassAuthorizationForClusterOrNodePool(t *testing.T) 
 			request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, requestPath, nil)
 			response := httptest.NewRecorder()
 			Middleware(nil, logr.Discard(), resources)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				t.Fatal("authorization-exempt request reached the next handler")
+				t.Fatal("unauthorized request reached the next handler")
 			})).ServeHTTP(response, request)
 			if response.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)

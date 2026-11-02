@@ -32,9 +32,10 @@ func (a *Authorizer) StartWatching(stopCh <-chan struct{}) {
 	}
 	startupCancel()
 	for name, store := range map[string]storage.ResourceStore{
-		"PlatformRole": a.stores.PlatformRoles,
-		"Role":         a.stores.Roles,
-		"RoleBinding":  a.stores.RoleBindings,
+		"PlatformRole":        a.stores.PlatformRoles,
+		"Role":                a.stores.Roles,
+		"RoleBinding":         a.stores.RoleBindings,
+		"PlatformRoleBinding": a.stores.PlatformRoleBindings,
 	} {
 		go a.watchStore(stopCh, name, store)
 	}
