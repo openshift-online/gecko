@@ -27,6 +27,7 @@ import (
 	"github.com/openshift-online/gecko/platform-api/pkg/authn"
 	"github.com/openshift-online/gecko/platform-api/pkg/authz"
 	"github.com/openshift-online/gecko/platform-api/pkg/featureflags"
+	"github.com/openshift-online/gecko/platform-api/quota"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -189,6 +190,34 @@ func main() {
 		log.Println("No SPANNER_DATABASE or DB_HOST set, using in-memory storage")
 	}
 
+	// Install the quota enforcer. The enforcer reads Quota limits and counts
+	// existing resources from the same storage backend as the API server.
+	//
+	// Use apiserver.GroupKindResourceType to derive the resourceType argument
+	// so the stores share the same identity (table name / memory map / event
+	// channel) as those created internally by apiserver.New. Passing arbitrary
+	// strings like "quotas" would create separate stores that are invisible to
+	// the API handlers, causing quota checks to always see an empty namespace.
+	privateScheme := getPrivateScheme()
+	quotaGVK := privatev1.GroupVersion.WithKind("Quota")
+	clusterGVK := privatev1.GroupVersion.WithKind("Cluster")
+	nodepoolGVK := privatev1.GroupVersion.WithKind("NodePool")
+
+	quotaStore, err := storageFactory(apiserver.GroupKindResourceType(quotaGVK.GroupKind()), privateScheme, quotaGVK)
+	if err != nil {
+		log.Fatalf("Failed to create quota store: %v", err)
+	}
+	clusterStore, err := storageFactory(apiserver.GroupKindResourceType(clusterGVK.GroupKind()), privateScheme, clusterGVK)
+	if err != nil {
+		log.Fatalf("Failed to create cluster store for quota: %v", err)
+	}
+	nodepoolStore, err := storageFactory(apiserver.GroupKindResourceType(nodepoolGVK.GroupKind()), privateScheme, nodepoolGVK)
+	if err != nil {
+		log.Fatalf("Failed to create nodepool store for quota: %v", err)
+	}
+	enforcer := quota.NewStoreEnforcer(quotaStore, clusterStore, nodepoolStore)
+	privatev1.SetQuotaCheckFunc(enforcer.CheckQuota)
+
 	// Create server with resource configuration
 	publicResources := getPublicResources()
 	publicMiddlewareFactory := func(factory apiserver.StorageFactory, privateScheme *runtime.Scheme, stopCh <-chan struct{}) ([]func(http.Handler) http.Handler, error) {
@@ -225,7 +254,7 @@ func main() {
 		Private: apiserver.PrivateAPIOptions{
 			Port:                     privatePort,
 			Resources:                getPrivateResources(),
-			Scheme:                   getPrivateScheme(),
+			Scheme:                   privateScheme,
 			TLSCertFile:              tlsCertFile,
 			TLSKeyFile:               tlsKeyFile,
 			AuthenticationKubeconfig: authnKubeconfig,

@@ -1,0 +1,191 @@
+description: "QuotaRequest allows users to request a quota limit increase for a namespace.\nUsers
+  submit a QuotaRequest with a justification; the QuotaRequest controller\nautomatically
+  approves requests that fall within the namespace's\nautoApproveThreshold. Requests
+  that exceed the threshold remain Pending for\noperator review.\n\nQuotaRequest objects
+  are immutable after creation. Approved requests cannot\nbe deleted via the public
+  API, preserving them as an immutable audit record.\n\nLifecycle (Approved condition
+  / reason):\n\n\tuser creates QuotaRequest\n\t         │\n\t         ▼\n\t   ┌──────────────┐
+  \  newer request          ┌──────────────────────┐\n\t   │   Pending    │──for same
+  resource──────► │      Superseded      │\n\t   │ (no conditions│                          │
+  Approved=Unknown     │\n\t   │   set yet)   │                          │ reason=Superseded
+  \   │\n\t   └──────┬───────┘                          │ Superseded=True      │\n\t
+  \         │                                  │ (deletable)          │\n\t          │
+  requestedLimit                   └──────────────────────┘\n\t          │ ≤ currentLimit\n\t
+  \         ├─────────────────────────────────► ┌──────────────────────┐\n\t          │
+  \                                 │    NotIncreasing     │\n\t          │                                  │
+  Approved=Unknown     │\n\t          │                                  │ reason=NotIncreasing
+  │\n\t          │                                  │ (deletable)          │\n\t          │
+  \                                 └──────────────────────┘\n\t          │ requestedLimit\n\t
+  \         │ ≤ autoApproveThreshold\n\t          │ and > currentLimit\n\t          ├─────────────────────────────────►
+  ┌──────────────────────┐\n\t          │                                  │    AutoApproved
+  \     │\n\t          │                                  │ Approved=True        │\n\t
+  \         │                                  │ reason=AutoApproved  │\n\t          │
+  \                                 │ (not deletable)      │\n\t          │                                  └──────────────────────┘\n\t
+  \         │ operator approves\n\t          │ (private API)\n\t          ├─────────────────────────────────►
+  ┌──────────────────────┐\n\t          │                                  │  ManuallyApproved
+  \   │\n\t          │                                  │ Approved=True        │\n\t
+  \         │                                  │ reason=ManuallyAppr. │\n\t          │
+  \                                 │ (not deletable)      │\n\t          │                                  └──────────────────────┘\n\t
+  \         │ operator denies\n\t          │ (private API)\n\t          └─────────────────────────────────►
+  ┌──────────────────────┐\n\t                                             │       Denied
+  \        │\n\t                                             │ Approved=False       │\n\t
+  \                                            │ reason=Denied        │\n\t                                             │
+  (deletable)          │\n\t                                             └──────────────────────┘"
+properties:
+  apiVersion:
+    description: |-
+      APIVersion defines the versioned schema of this representation of an object.
+      Servers should convert recognized schemas to the latest internal value, and
+      may reject unrecognized values.
+      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+    type: string
+  kind:
+    description: |-
+      Kind is a string value representing the REST resource this object represents.
+      Servers may infer this from the endpoint the client submits requests to.
+      Cannot be updated.
+      In CamelCase.
+      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+    type: string
+  metadata:
+    type: object
+  spec:
+    description: spec defines the requested quota increase.
+    properties:
+      neededBy:
+        description: |-
+          neededBy is the date by which the additional quota is required.
+          Providing this information helps the platform pre-provision shared
+          infrastructure before the new limit is reached.
+          This field is immutable after creation.
+        format: date-time
+        type: string
+        x-kubernetes-validations:
+        - message: neededBy is immutable
+          rule: self == oldSelf
+      reason:
+        description: |-
+          reason describes why the limit increase is needed.
+          This field is immutable after creation.
+        maxLength: 1024
+        minLength: 1
+        type: string
+        x-kubernetes-validations:
+        - message: reason is immutable
+          rule: self == oldSelf
+      requestedLimit:
+        description: |-
+          requestedLimit is the new limit value being requested.
+          Must be greater than the current effective limit.
+          This field is immutable after creation.
+        format: int32
+        minimum: 1
+        type: integer
+        x-kubernetes-validations:
+        - message: requestedLimit is immutable
+          rule: self == oldSelf
+      resource:
+        description: |-
+          resource is the plural lowercase resource name for which a limit increase
+          is requested, e.g. "hostedclusters" or "nodepools".
+          This field is immutable after creation.
+        enum:
+        - hostedclusters
+        - nodepools
+        maxLength: 63
+        type: string
+        x-kubernetes-validations:
+        - message: resource is immutable
+          rule: self == oldSelf
+    required:
+    - reason
+    - requestedLimit
+    - resource
+    type: object
+  status:
+    description: status reflects the current state of the request.
+    properties:
+      approvedLimit:
+        description: |-
+          approvedLimit is the limit value that was granted.
+          Set only when the Approved condition is True.
+        format: int32
+        minimum: 1
+        type: integer
+      autoApproved:
+        description: |-
+          autoApproved indicates whether this request was automatically approved by
+          the controller (true) or by an operator (false). Private API only.
+        type: boolean
+      conditions:
+        description: |-
+          conditions represents the latest observed state of the QuotaRequest.
+
+          Condition types:
+            Approved   — True when granted, False when denied, Unknown when pending
+                         or superseded.
+            Superseded — True when a newer QuotaRequest for the same resource
+                         exists in the namespace.
+        items:
+          description: Condition contains details for one aspect of the current state
+            of this API Resource.
+          properties:
+            lastTransitionTime:
+              description: |-
+                lastTransitionTime is the last time the condition transitioned from one status to another.
+                This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+              format: date-time
+              type: string
+            message:
+              description: |-
+                message is a human readable message indicating details about the transition.
+                This may be an empty string.
+              maxLength: 32768
+              type: string
+            observedGeneration:
+              description: |-
+                observedGeneration represents the .metadata.generation that the condition was set based upon.
+                For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                with respect to the current state of the instance.
+              format: int64
+              minimum: 0
+              type: integer
+            reason:
+              description: |-
+                reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                Producers of specific condition types may define expected values and meanings for this field,
+                and whether the values are considered a guaranteed API.
+                The value should be a CamelCase string.
+                This field may not be empty.
+              maxLength: 1024
+              minLength: 1
+              pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+              type: string
+            status:
+              description: status of the condition, one of True, False, Unknown.
+              enum:
+              - "True"
+              - "False"
+              - Unknown
+              type: string
+            type:
+              description: type of condition in CamelCase or in foo.example.com/CamelCase.
+              maxLength: 316
+              pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+              type: string
+          required:
+          - lastTransitionTime
+          - message
+          - reason
+          - status
+          - type
+          type: object
+        maxItems: 10
+        type: array
+        x-kubernetes-list-map-keys:
+        - type
+        x-kubernetes-list-type: map
+    type: object
+required:
+- spec
+type: object

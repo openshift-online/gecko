@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-logr/logr"
@@ -12,6 +14,7 @@ import (
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/types"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -45,6 +48,47 @@ func authorizeRequestObject(w http.ResponseWriter, r *http.Request, obj client.O
 	}
 	writeError(w, http.StatusForbidden, "forbidden")
 	return false
+}
+
+// writeValidationError writes a validation error response. If err is a
+// *apierrors.StatusError, its ErrStatus (including Reason, Details, and
+// structured Causes) is written directly so that programmatic clients can
+// consume the structured payload without parsing the message string. Plain
+// errors fall back to writeError with the code from validationStatusCode.
+func writeValidationError(w http.ResponseWriter, err error) {
+	var se *apierrors.StatusError
+	if errors.As(err, &se) {
+		w.Header().Set(constants.HeaderContentType, constants.ContentTypeJSON)
+		w.WriteHeader(int(se.ErrStatus.Code))
+		json.NewEncoder(w).Encode(se.ErrStatus)
+		return
+	}
+	writeError(w, validationStatusCode(err), fmt.Sprintf("validation failed: %v", err))
+}
+
+// validationStatusCode maps a validation error returned by ValidateCreate or
+// ValidateDelete to the appropriate HTTP status code. It inspects the error for
+// known apimachinery StatusError codes so that domain-specific validators can
+// return semantically precise HTTP responses (e.g. 403 for quota exhaustion,
+// 409 for immutable-record conflicts) without the handler needing to know about
+// the individual validator implementations.
+//
+// Unknown errors fall back to 400 Bad Request, preserving the existing behavior
+// for all validators that return plain fmt.Errorf values.
+func validationStatusCode(err error) int {
+	if err == nil {
+		return http.StatusOK
+	}
+	if apierrors.IsForbidden(err) {
+		return http.StatusForbidden
+	}
+	if apierrors.IsConflict(err) {
+		return http.StatusConflict
+	}
+	if apierrors.IsInternalError(err) {
+		return http.StatusInternalServerError
+	}
+	return http.StatusBadRequest
 }
 
 // specChanged checks if the spec field has changed between two objects.
