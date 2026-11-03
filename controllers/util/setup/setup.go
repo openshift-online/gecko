@@ -10,6 +10,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 )
 
@@ -66,4 +67,29 @@ func (rf *RootFlags) NewManager(scheme *runtime.Scheme, log logger.Logger) (ctrl
 // ControllerOpts returns per-controller options derived from root flags.
 func (rf *RootFlags) ControllerOpts() controller.Options {
 	return controller.Options{MaxConcurrentReconciles: rf.Workers}
+}
+
+// NewClient creates a lightweight controller-runtime Client without starting a
+// full manager. Useful for one-shot administrative commands that only need to
+// read or write a small number of resources.
+//
+// When OrlopURL is set it connects directly to the orlop API server (legacy /
+// local dev). When empty it uses in-cluster config.
+func (rf *RootFlags) NewClient(scheme *runtime.Scheme) (ctrlclient.Client, error) {
+	var cfg *rest.Config
+	if rf.OrlopURL != "" {
+		cfg = &rest.Config{Host: rf.OrlopURL}
+	} else {
+		var err error
+		cfg, err = ctrl.GetConfig()
+		if err != nil {
+			return nil, fmt.Errorf("get in-cluster config: %w", err)
+		}
+	}
+
+	c, err := ctrlclient.New(cfg, ctrlclient.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("create client: %w", err)
+	}
+	return c, nil
 }
