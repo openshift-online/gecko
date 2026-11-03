@@ -1,0 +1,10 @@
+apiVersion: gcp.managed.openshift.io/v1
+kind: PlatformRoleBinding
+metadata:
+  name: authenticated-users
+spec:
+  subject: "*"
+  roleRef:
+    apiGroup: gcp.managed.openshift.io
+    kind: PlatformRole
+    name: authenticated-user

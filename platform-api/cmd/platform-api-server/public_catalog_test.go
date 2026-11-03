@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +23,7 @@ import (
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage"
 	"github.com/openshift-online/gecko/orlop/pkg/apiserver/storage/memory"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
+	publicv1 "github.com/openshift-online/gecko/platform-api/api/public/v1"
 	"github.com/openshift-online/gecko/platform-api/pkg/authn"
 	"github.com/openshift-online/gecko/platform-api/pkg/authz"
 
@@ -27,7 +32,23 @@ import (
 	runtimeschema "k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
+type catalogPublicRequester func(method, path string, authenticated bool) (int, string)
+type catalogPrivateRequester func(method, path string, body []byte) (int, string)
+
+//nolint:kubeapilinter // Test-only HTTP harness, not a serialized API type.
+type catalogAuthorizationTestServer struct {
+	request        catalogPublicRequester
+	privateRequest catalogPrivateRequester
+	stores         authz.Stores
+	authorizer     *authz.Authorizer
+	version        *privatev1.Version
+	channel        *privatev1.Channel
+	versionStore   storage.ResourceStore
+	channelStore   storage.ResourceStore
+}
+
+func newCatalogAuthorizationTestServer(t *testing.T) catalogAuthorizationTestServer {
+	t.Helper()
 	privatePort := freePublicAPITestPort(t)
 	publicPort := freePublicAPITestPort(t)
 	publicResources := getPublicResources()
@@ -67,6 +88,25 @@ func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
 	if err := channelStore.Create(context.Background(), channel); err != nil {
 		t.Fatalf("seed Channel: %v", err)
 	}
+	backingStores := map[runtimeschema.GroupVersionKind]storage.ResourceStore{versionGVK: versionStore, channelGVK: channelStore}
+	storageFactory := func(resourceType string, scheme *runtime.Scheme, gvk runtimeschema.GroupVersionKind) (storage.ResourceStore, error) {
+		if store, found := backingStores[gvk]; found {
+			return store, nil
+		}
+		store := memory.NewMemoryStore(resourceType, scheme, gvk)
+		backingStores[gvk] = store
+		return store, nil
+	}
+	stores, err := authz.NewStores(storageFactory, privateScheme)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorizer, err := authz.NewAuthorizer(context.Background(), stores, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatev1.SetValidatorDeps(privatev1.ValidatorDeps{RoleExists: stores.RoleExists, PlatformRoleExists: stores.PlatformRoleExists})
+	t.Cleanup(func() { privatev1.SetValidatorDeps(privatev1.ValidatorDeps{}) })
 
 	server, err := apiserver.New(apiserver.Options{
 		Address: "127.0.0.1",
@@ -84,19 +124,11 @@ func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
 			Resources: publicResources,
 			Middleware: []func(http.Handler) http.Handler{
 				authn.Middleware(authn.Config{}),
-				authz.Middleware(nil, logger, publicResources),
+				authz.Middleware(authorizer, logger, publicResources),
 			},
 		},
-		StorageFactory: func(resourceType string, scheme *runtime.Scheme, gvk runtimeschema.GroupVersionKind) (storage.ResourceStore, error) {
-			switch gvk.Kind {
-			case "Version":
-				return versionStore, nil
-			case "Channel":
-				return channelStore, nil
-			}
-			return memory.NewMemoryStore(resourceType, scheme, gvk), nil
-		},
-		Logger: logger,
+		StorageFactory: storageFactory,
+		Logger:         logger,
 	})
 	if err != nil {
 		t.Fatalf("create API server: %v", err)
@@ -150,7 +182,98 @@ func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
 		return resp.StatusCode, string(body)
 	}
 
+	privateURL := fmt.Sprintf("https://127.0.0.1:%d", privatePort)
+	privateTransport := &http.Transport{TLSClientConfig: &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // Loopback API server uses a self-signed test certificate.
+	}}
+	t.Cleanup(privateTransport.CloseIdleConnections)
+	privateClient := &http.Client{Timeout: 3 * time.Second, Transport: privateTransport}
+	waitForPublicAPITestServer(t, privateClient, privateURL+"/apis", runDone, &runErr)
+	privateRequest := func(method, path string, body []byte) (int, string) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(context.Background(), method, privateURL+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := privateClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, string(data)
+	}
+	return catalogAuthorizationTestServer{
+		request: request, privateRequest: privateRequest, stores: stores, authorizer: authorizer,
+		version: version, channel: channel, versionStore: versionStore, channelStore: channelStore,
+	}
+}
+
+func TestPublicAPICatalogBindingAuthorization(t *testing.T) {
+	server := newCatalogAuthorizationTestServer(t)
+	request, privateRequest := server.request, server.privateRequest
+	stores, authorizer := server.stores, server.authorizer
 	apiPrefix := "/apis/gcp.managed.openshift.io/v1"
+	for _, path := range []string{"/versions", "/versions/4.22.1", "/channels", "/channels/stable"} {
+		if status, body := request(http.MethodGet, apiPrefix+path, true); status != http.StatusForbidden {
+			t.Fatalf("catalog without binding %s = %d: %s", path, status, body)
+		}
+	}
+	if status, body := privateRequest(http.MethodGet, apiPrefix, nil); status != http.StatusOK || !strings.Contains(body, `"platformrolebindings"`) {
+		t.Fatalf("private binding discovery = %d: %s", status, body)
+	}
+	if status, body := request(http.MethodGet, apiPrefix, true); status != http.StatusOK || strings.Contains(body, `"platformrolebindings"`) {
+		t.Fatalf("public discovery = %d: %s", status, body)
+	}
+	seedPlatformRole(t, stores, "authenticated-user", []string{"version.get", "version.list", "channel.get", "channel.list"})
+	binding := &privatev1.PlatformRoleBinding{
+		TypeMeta:   metav1.TypeMeta{APIVersion: privatev1.GroupVersion.String(), Kind: "PlatformRoleBinding"},
+		ObjectMeta: metav1.ObjectMeta{Name: "authenticated-users"},
+		Spec: privatev1.PlatformRoleBindingSpec{Subject: "*", RoleRef: privatev1.RoleRef{
+			APIGroup: privatev1.GroupVersion.Group, Kind: "PlatformRole", Name: "authenticated-user",
+		}},
+	}
+	writeBinding := func(method string) {
+		t.Helper()
+		data, err := json.Marshal(binding)
+		if err != nil {
+			t.Fatal(err)
+		}
+		path, want := apiPrefix+"/platformrolebindings", http.StatusCreated
+		if method == http.MethodPut {
+			path += "/" + binding.Name
+			want = http.StatusOK
+		}
+		status, body := privateRequest(method, path, data)
+		if status != want {
+			t.Fatalf("private binding %s = %d: %s", method, status, body)
+		}
+		if err := json.Unmarshal([]byte(body), binding); err != nil {
+			t.Fatal(err)
+		}
+		if err := authorizer.Reload(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeBinding(http.MethodPost)
+	testCatalogReadsAndDeniedRequests(t, request, apiPrefix)
+	t.Run("conditions filter public objects before pagination", func(t *testing.T) {
+		testCatalogConditionalLists(t, server, apiPrefix, binding, writeBinding)
+	})
+	t.Run("principal condition retains empty list semantics", func(t *testing.T) {
+		testCatalogPrincipalCondition(t, request, apiPrefix, binding, writeBinding)
+	})
+	t.Run("deleting binding revokes catalog grant", func(t *testing.T) {
+		testCatalogRevocation(t, server, apiPrefix, binding, writeBinding)
+	})
+}
+
+func testCatalogReadsAndDeniedRequests(t *testing.T, request catalogPublicRequester, apiPrefix string) {
+	t.Helper()
 	for _, path := range []struct {
 		name string
 		path string
@@ -210,6 +333,16 @@ func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
 		{name: "unauthenticated catalog watch", method: http.MethodGet, path: apiPrefix + "/versions?watch=true", wantStatus: http.StatusUnauthorized},
 		{name: "authenticated catalog write", method: http.MethodPost, path: apiPrefix + "/versions", authenticated: true, wantStatus: http.StatusForbidden},
 		{name: "authenticated catalog watch", method: http.MethodGet, path: apiPrefix + "/versions?watch=true", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "authenticated channel write", method: http.MethodPost, path: apiPrefix + "/channels", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "authenticated channel watch", method: http.MethodGet, path: apiPrefix + "/channels?watch=true", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "private binding list", method: http.MethodGet, path: apiPrefix + "/platformrolebindings", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "private binding create", method: http.MethodPost, path: apiPrefix + "/platformrolebindings", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "private binding update", method: http.MethodPut, path: apiPrefix + "/platformrolebindings/authenticated-users", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "private binding delete", method: http.MethodDelete, path: apiPrefix + "/platformrolebindings/authenticated-users", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "namespace resource", method: http.MethodGet, path: apiPrefix + "/namespaces/project-a/clusters", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "cross namespace collection", method: http.MethodGet, path: apiPrefix + "/clusters", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "forged namespace for platform resource", method: http.MethodGet, path: apiPrefix + "/namespaces/project-a/versions", authenticated: true, wantStatus: http.StatusForbidden},
+		{name: "foreign API group", method: http.MethodGet, path: "/apis/other.example.com/v1/versions", authenticated: true, wantStatus: http.StatusForbidden},
 	}
 	for _, tt := range deniedRequests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -217,6 +350,101 @@ func TestPublicAPICatalogAuthorizationExemptReads(t *testing.T) {
 				t.Errorf("%s %s = %d, want %d", tt.method, tt.path, got, tt.wantStatus)
 			}
 		})
+	}
+
+}
+
+func testCatalogConditionalLists(t *testing.T, server catalogAuthorizationTestServer, apiPrefix string, binding *privatev1.PlatformRoleBinding, writeBinding func(string)) {
+	t.Helper()
+	request := server.request
+	version, channel := server.version, server.channel
+	versionStore, channelStore := server.versionStore, server.channelStore
+	for _, name := range []string{"candidate", "eus"} {
+		item := channel.DeepCopy()
+		item.Name = name
+		if err := channelStore.Create(context.Background(), item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidate := version.DeepCopy()
+	candidate.Name = "4.23.0"
+	candidate.Spec.ChannelGroups = []string{"candidate"}
+	if err := versionStore.Create(context.Background(), candidate); err != nil {
+		t.Fatal(err)
+	}
+	condition := `(context.resourcePlural == "channels" && ["stable", "eus"].contains(context.resourceName)) || (context.resourcePlural == "versions" && context.spec.channelGroups.contains("stable"))`
+	binding.Spec.Condition = &condition
+	writeBinding(http.MethodPut)
+	path := apiPrefix + "/channels?limit=1"
+	var names []string
+	for range 3 {
+		status, body := request(http.MethodGet, path, true)
+		if status != http.StatusOK {
+			t.Fatalf("filtered list = %d: %s", status, body)
+		}
+		var list publicv1.ChannelList
+		if err := json.Unmarshal([]byte(body), &list); err != nil {
+			t.Fatal(err)
+		}
+		if len(list.Items) != 1 {
+			t.Fatalf("page items = %d, want one visible item: %s", len(list.Items), body)
+		}
+		names = append(names, list.Items[0].Name)
+		if list.Continue == "" {
+			break
+		}
+		path = apiPrefix + "/channels?limit=1&continue=" + url.QueryEscape(list.Continue)
+	}
+	if !slices.Equal(names, []string{"eus", "stable"}) {
+		t.Fatalf("visible channels = %v", names)
+	}
+	for _, path := range []string{"/channels/candidate", "/versions/4.23.0"} {
+		if status, body := request(http.MethodGet, apiPrefix+path, true); status != http.StatusForbidden {
+			t.Fatalf("hidden item %s = %d: %s", path, status, body)
+		}
+	}
+	if status, body := request(http.MethodGet, apiPrefix+"/versions", true); status != http.StatusOK || strings.Contains(body, candidate.Name) || strings.Contains(body, "releaseImage") {
+		t.Fatalf("filtered public versions = %d: %s", status, body)
+	}
+}
+
+func testCatalogPrincipalCondition(t *testing.T, request catalogPublicRequester, apiPrefix string, binding *privatev1.PlatformRoleBinding, writeBinding func(string)) {
+	t.Helper()
+	condition := `principal == User::"other@example.com"`
+	binding.Spec.Condition = &condition
+	writeBinding(http.MethodPut)
+	status, body := request(http.MethodGet, apiPrefix+"/versions", true)
+	var list publicv1.VersionList
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusOK || len(list.Items) != 0 {
+		t.Fatalf("principal-filtered list = %d: %s", status, body)
+	}
+	if status, body := request(http.MethodGet, apiPrefix+"/versions/4.22.1", true); status != http.StatusForbidden {
+		t.Fatalf("principal-filtered get = %d: %s", status, body)
+	}
+}
+
+func testCatalogRevocation(t *testing.T, server catalogAuthorizationTestServer, apiPrefix string, binding *privatev1.PlatformRoleBinding, writeBinding func(string)) {
+	t.Helper()
+	request, privateRequest := server.request, server.privateRequest
+	authorizer := server.authorizer
+	binding.Spec.Condition = nil
+	writeBinding(http.MethodPut)
+	if status, body := request(http.MethodGet, apiPrefix+"/versions", true); status != http.StatusOK {
+		t.Fatalf("restored grant = %d: %s", status, body)
+	}
+	if status, body := privateRequest(http.MethodDelete, apiPrefix+"/platformrolebindings/"+binding.Name, nil); status != http.StatusOK {
+		t.Fatalf("delete binding = %d: %s", status, body)
+	}
+	if err := authorizer.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/versions", "/versions/4.22.1", "/channels", "/channels/stable"} {
+		if status, body := request(http.MethodGet, apiPrefix+path, true); status != http.StatusForbidden {
+			t.Fatalf("after revocation %s = %d: %s", path, status, body)
+		}
 	}
 }
 

@@ -4,7 +4,6 @@ import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster
-// +orlop:authorization-exempt-verbs: get,list
 // Version provides clients with versions for cluster creation and upgrade
 // validation, including their channel-group membership. Version resources are
 // synchronized from Cincinnati by the version-sync controller and are read-only

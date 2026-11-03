@@ -13,18 +13,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// HasNamespacePermission reports whether email has a binding in namespace
-// whose referenced role grants action. RoleBinding conditions are deliberately
-// not evaluated here: list conditions are applied to each returned object.
-func (a *Authorizer) HasNamespacePermission(ctx context.Context, email string, action Action, namespace string) (bool, error) {
+// HasPermission reports whether email has an applicable binding whose role
+// grants action. Conditions are evaluated for each returned object, not here.
+func (a *Authorizer) HasPermission(ctx context.Context, email string, action Action, namespace string) (bool, error) {
 	if email == "" {
 		return false, fmt.Errorf("principal is empty")
 	}
-	if namespace == "" {
+	if _, valid := resourceForAction(action, namespace); !valid {
 		return false, nil
 	}
 
-	bindings, err := roleBindingsForUser(ctx, a.stores, email)
+	bindings, err := bindingsForUser(ctx, a.stores, email, isPlatformAction(action))
 	if err != nil {
 		return false, err
 	}
@@ -55,11 +54,14 @@ func (a *Authorizer) HasNamespacePermission(ctx context.Context, email string, a
 func permissionsForBindingFromStores(
 	ctx context.Context,
 	stores Stores,
-	binding privatev1.RoleBinding,
+	binding authorizationBinding,
 	roles map[string]privatev1.Role,
 	platformRoles map[string]privatev1.PlatformRole,
 ) ([]string, bool, error) {
 	if binding.Spec.RoleRef.APIGroup != privatev1.GroupVersion.Group {
+		return nil, false, nil
+	}
+	if binding.platform && binding.Spec.RoleRef.Kind != "PlatformRole" {
 		return nil, false, nil
 	}
 

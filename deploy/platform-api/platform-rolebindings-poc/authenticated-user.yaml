@@ -1,0 +1,10 @@
+apiVersion: gcp.managed.openshift.io/v1
+kind: PlatformRole
+metadata:
+  name: authenticated-user
+spec:
+  permissions:
+    - version.get
+    - version.list
+    - channel.get
+    - channel.list

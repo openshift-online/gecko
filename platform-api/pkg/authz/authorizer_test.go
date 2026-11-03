@@ -201,7 +201,7 @@ func TestAuthorizerFailsClosedWhenAllMatchingBindingsHaveEvaluationErrors(t *tes
 	}
 }
 
-func TestHasNamespacePermissionIgnoresBindingConditions(t *testing.T) {
+func TestHasPermissionIgnoresBindingConditions(t *testing.T) {
 	stores, authorizer := newTestAuthorizer(t)
 	role := &privatev1.PlatformRole{Spec: privatev1.PlatformRoleSpec{Permissions: []string{"cluster.list"}}}
 	role.Name = "cluster-viewer"
@@ -227,23 +227,23 @@ func TestHasNamespacePermissionIgnoresBindingConditions(t *testing.T) {
 	if err := authorizer.Reload(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	allowed, err := authorizer.HasNamespacePermission(context.Background(), "alice@example.com", ListClusters, "project-a")
+	allowed, err := authorizer.HasPermission(context.Background(), "alice@example.com", ListClusters, "project-a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !allowed {
-		t.Fatal("HasNamespacePermission() = false, want true")
+		t.Fatal("HasPermission() = false, want true")
 	}
-	allowed, err = authorizer.HasNamespacePermission(context.Background(), "alice@example.com", ListClusters, "project-b")
+	allowed, err = authorizer.HasPermission(context.Background(), "alice@example.com", ListClusters, "project-b")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if allowed {
-		t.Fatal("HasNamespacePermission() = true, want false for project-b")
+		t.Fatal("HasPermission() = true, want false for project-b")
 	}
 }
 
-func TestHasNamespacePermissionResolvesNamespacedRole(t *testing.T) {
+func TestHasPermissionResolvesNamespacedRole(t *testing.T) {
 	stores, authorizer := newTestAuthorizer(t)
 	role := &privatev1.Role{Spec: privatev1.RoleSpec{Permissions: []string{"cluster.list"}}}
 	role.Name = "cluster-viewer"
@@ -269,12 +269,12 @@ func TestHasNamespacePermissionResolvesNamespacedRole(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	allowed, err := authorizer.HasNamespacePermission(context.Background(), "alice@example.com", ListClusters, "project-a")
+	allowed, err := authorizer.HasPermission(context.Background(), "alice@example.com", ListClusters, "project-a")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !allowed {
-		t.Fatal("HasNamespacePermission() = false, want true")
+		t.Fatal("HasPermission() = false, want true")
 	}
 }
 
@@ -354,7 +354,7 @@ func TestGeneratePolicySetIsPerBinding(t *testing.T) {
 	role := privatev1.PlatformRole{Spec: privatev1.PlatformRoleSpec{Permissions: []string{"cluster.get"}}}
 	role.Name = "cluster-viewer"
 
-	policies, err := policyForBinding(binding, role.Spec.Permissions)
+	policies, err := policyForBinding(authorizationBinding{ObjectMeta: binding.ObjectMeta, Spec: binding.Spec}, role.Spec.Permissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,6 +490,28 @@ func TestGeneratePolicySetLogsMalformedConditionSafely(t *testing.T) {
 	for _, sensitive := range []string{*binding.Spec.Condition, binding.Namespace, binding.Name, binding.Spec.Subject, binding.Spec.RoleRef.Name} {
 		if strings.Contains(entry.String(), sensitive) {
 			t.Errorf("authorization log contains customer-controlled value %q: %s", sensitive, entry)
+		}
+	}
+}
+
+func TestStoredConditionCannotEscapeNamespaceBindingConstraints(t *testing.T) {
+	stores, authorizer := newTestAuthorizer(t)
+	condition := `true) || (true`
+	seedClusterGetBinding(t, stores, "project-a", &condition)
+	if err := authorizer.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		email     string
+		namespace string
+	}{
+		{email: "alice@example.com", namespace: "project-a"},
+		{email: "alice@example.com", namespace: "project-b"},
+		{email: "bob@example.com", namespace: "project-a"},
+	} {
+		allowed, err := authorizer.Authorize(context.Background(), tt.email, GetCluster, tt.namespace)
+		if err != nil || allowed {
+			t.Fatalf("malformed condition for %s/%s = %t, %v; want deny", tt.email, tt.namespace, allowed, err)
 		}
 	}
 }

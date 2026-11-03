@@ -1,0 +1,59 @@
+description: |-
+  PlatformRoleBinding grants a PlatformRole for platform-scoped resources.
+  It is managed through the private API by the platform's GitOps workflow.
+properties:
+  apiVersion:
+    description: |-
+      APIVersion defines the versioned schema of this representation of an object.
+      Servers should convert recognized schemas to the latest internal value, and
+      may reject unrecognized values.
+      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+    type: string
+  kind:
+    description: |-
+      Kind is a string value representing the REST resource this object represents.
+      Servers may infer this from the endpoint the client submits requests to.
+      Cannot be updated.
+      In CamelCase.
+      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+    type: string
+  metadata:
+    type: object
+  spec:
+    description: |-
+      spec identifies the subject, PlatformRole, and optional Cedar condition.
+      A subject of "*" selects all authenticated principals.
+    properties:
+      condition:
+        description: condition is an optional Cedar expression that further limits
+          this grant.
+        maxLength: 4096
+        type: string
+      roleRef:
+        description: |-
+          roleRef identifies a PlatformRole in this API group. Its supported kind
+          is PlatformRole.
+        properties:
+          apiGroup:
+            type: string
+          kind:
+            type: string
+          name:
+            type: string
+        required:
+        - apiGroup
+        - kind
+        - name
+        type: object
+      subject:
+        description: subject is a normalized email principal or "*" for all authenticated
+          principals.
+        minLength: 1
+        type: string
+    required:
+    - roleRef
+    - subject
+    type: object
+required:
+- spec
+type: object

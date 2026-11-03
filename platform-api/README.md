@@ -101,6 +101,7 @@ Currently hardcoded to in-memory storage. Data does not survive restarts. Postgr
 - [API aggregation proposal](../api-aggregation.md) — motivation and design
 - [Implementation status](../api-aggregation-status.md) — phase tracker
 - [orlop](../orlop/) — framework, code generator, storage backends
+- [PlatformRoleBinding POC](../deploy/platform-api/platform-rolebindings-poc/README.md) — platform-scope grants through the existing binding mechanism
 
 ## Scheduler
 

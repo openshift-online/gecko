@@ -21,6 +21,10 @@ var (
 	//go:embed .schemas/nodepool_schema.yaml
 	NodePoolSchemaYAML string
 
+	// PlatformRoleBindingSchemaYAML contains the OpenAPI v3 schema for PlatformRoleBinding.
+	//go:embed .schemas/platformrolebinding_schema.yaml
+	PlatformRoleBindingSchemaYAML string
+
 	// PlatformRoleSchemaYAML contains the OpenAPI v3 schema for PlatformRole.
 	//go:embed .schemas/platformrole_schema.yaml
 	PlatformRoleSchemaYAML string
@@ -48,8 +52,6 @@ var ChannelResourceInfo = types.ResourceInfo{
 	SchemaYAML: ChannelSchemaYAML,
 	// Generated from // +orlop:public-verbs annotation.
 	Verbs: []string{"get", "list"},
-	// Generated from // +orlop:authorization-exempt-verbs annotation.
-	AuthorizationExemptVerbs: []string{"get", "list"},
 }
 
 // ClusterResourceInfo describes the Cluster resource type.
@@ -104,6 +106,15 @@ var NodePoolResourceInfo = types.ResourceInfo{
 	},
 }
 
+// PlatformRoleBindingResourceInfo describes the PlatformRoleBinding resource type.
+var PlatformRoleBindingResourceInfo = types.ResourceInfo{
+	GVK:        GroupVersion.WithKind("PlatformRoleBinding"),
+	Plural:     "platformrolebindings",
+	Singular:   "platformrolebinding",
+	Namespaced: false,
+	SchemaYAML: PlatformRoleBindingSchemaYAML,
+}
+
 // PlatformRoleResourceInfo describes the PlatformRole resource type.
 var PlatformRoleResourceInfo = types.ResourceInfo{
 	GVK:        GroupVersion.WithKind("PlatformRole"),
@@ -140,8 +151,6 @@ var VersionResourceInfo = types.ResourceInfo{
 	SchemaYAML: VersionSchemaYAML,
 	// Generated from // +orlop:public-verbs annotation.
 	Verbs: []string{"get", "list"},
-	// Generated from // +orlop:authorization-exempt-verbs annotation.
-	AuthorizationExemptVerbs: []string{"get", "list"},
 }
 
 // GetResourceInfos returns ResourceInfo definitions for all types in this package.
@@ -151,6 +160,7 @@ func GetResourceInfos() []types.ResourceInfo {
 		ChannelResourceInfo,
 		ClusterResourceInfo,
 		NodePoolResourceInfo,
+		PlatformRoleBindingResourceInfo,
 		PlatformRoleResourceInfo,
 		RoleBindingResourceInfo,
 		RoleResourceInfo,
