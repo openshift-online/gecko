@@ -1514,3 +1514,157 @@ func TestReconcile_AutomaticPreparationDoesNotDispatchTarget(t *testing.T) {
 	}
 	require.Nil(t, meta.FindStatusCondition(store.statusWriter.captured.(*privatev1.Cluster).Status.Conditions, privatev1.ControlPlaneUpgradeSubmitted), "maintaining the old release must not mark the new target as dispatched")
 }
+
+func findManifest(t *testing.T, manifests [][]byte, kind, name string) map[string]any {
+	t.Helper()
+	for _, m := range manifests {
+		var obj map[string]any
+		require.NoError(t, json.Unmarshal(m, &obj))
+		if obj["kind"] != kind {
+			continue
+		}
+		objMeta, _ := obj["metadata"].(map[string]any)
+		if objMeta["name"] == name {
+			return obj
+		}
+	}
+	t.Fatalf("no %s manifest named %q", kind, name)
+	return nil
+}
+
+func clusterWithIngressEmail(clusterID, email string) *privatev1.Cluster {
+	cluster := buildReadyCluster(clusterID, "4.15.0")
+	cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef = &privatev1.ServiceAccountsRef{
+		IngressEmail: email,
+	}
+	return cluster
+}
+
+func TestReconcile_IngressCertificateStaged(t *testing.T) {
+	clusterID := "cluster-ingress"
+	mcName := "mc-cluster-1"
+	groupKey := mustClusterGroupKey("hyperfleet", clusterID)
+
+	cluster := clusterWithIngressEmail(clusterID, "ingress@my-project.iam.gserviceaccount.com")
+	cluster.Status.HostedClusterResult = &privatev1.HostedClusterResult{
+		ObservedConditions: []metav1.Condition{{
+			Type: "GCPACMECNAMEAvailable", Status: metav1.ConditionTrue, Reason: "GCPSuccess",
+		}},
+	}
+
+	tr := mock.New()
+	tr.StatusOverrides[mcName+"/"+groupKey] = &transport.Status{
+		Conditions: []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+		ResourceStatuses: map[string]map[string]string{
+			hostedClusterResourceKey(cluster): {"availableCondition": "True"},
+		},
+	}
+
+	r, _ := buildReconciler(t, cluster, nil, tr, nil)
+	_, err := r.Reconcile(context.Background(), clusterReq(clusterID))
+	require.NoError(t, err)
+	require.Len(t, tr.ApplyCalls, 1)
+	require.Len(t, tr.ApplyCalls[0].Manifests, 6, "the ingress Certificate is added once the ACME CNAME exists")
+
+	hc := findManifest(t, tr.ApplyCalls[0].Manifests, "HostedCluster", cluster.Spec.SafeName)
+	require.NotContains(t, hc["spec"].(map[string]any), "operatorConfiguration")
+	findManifest(t, tr.ApplyCalls[0].Manifests, "Certificate", "ingress-default-cert")
+}
+
+func TestReconcile_DefaultIngressCertificateStagedAfterReady(t *testing.T) {
+	clusterID := "cluster-ingress"
+	mcName := "mc-cluster-1"
+	groupKey := mustClusterGroupKey("hyperfleet", clusterID)
+
+	cluster := clusterWithIngressEmail(clusterID, "ingress@my-project.iam.gserviceaccount.com")
+	cluster.Status.HostedClusterResult = &privatev1.HostedClusterResult{
+		ObservedConditions: []metav1.Condition{{
+			Type: "GCPACMECNAMEAvailable", Status: metav1.ConditionTrue, Reason: "GCPSuccess",
+		}},
+	}
+	cluster.Status.Conditions = []metav1.Condition{{
+		Type: "IngressCertificateReady", Status: metav1.ConditionTrue, Reason: "CertificateReady",
+	}}
+
+	tr := mock.New()
+	tr.StatusOverrides[mcName+"/"+groupKey] = &transport.Status{
+		Conditions: []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+		ResourceStatuses: map[string]map[string]string{
+			hostedClusterResourceKey(cluster): {"availableCondition": "True"},
+		},
+	}
+
+	r, _ := buildReconciler(t, cluster, nil, tr, nil)
+	_, err := r.Reconcile(context.Background(), clusterReq(clusterID))
+	require.NoError(t, err)
+	require.Len(t, tr.ApplyCalls, 1)
+
+	hc := findManifest(t, tr.ApplyCalls[0].Manifests, "HostedCluster", cluster.Spec.SafeName)
+	operatorConfig, ok := hc["spec"].(map[string]any)["operatorConfiguration"].(map[string]any)
+	require.True(t, ok, "the HostedCluster must reference the ready ingress certificate")
+	ingressOperator := operatorConfig["ingressOperator"].(map[string]any)
+	require.Equal(t, "ingress-default-cert",
+		ingressOperator["defaultCertificate"].(map[string]any)["name"])
+}
+
+func TestReconcile_IngressConditionsGateAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		conditionType string
+		conditionName string
+		reason        string
+	}{
+		{
+			name:          "ingress credentials missing",
+			conditionType: "IngressCredentialsFound",
+			conditionName: "IngressCredentialsReady",
+			reason:        "IngressServiceAccountNotFound",
+		},
+		{
+			name:          "default certificate missing",
+			conditionType: "IngressDefaultCertificateSynced",
+			conditionName: "IngressDefaultCertificateReady",
+			reason:        "SecretNotFound",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clusterID := "cluster-ingress"
+			mcName := "mc-cluster-1"
+			groupKey := mustClusterGroupKey("hyperfleet", clusterID)
+
+			cluster := clusterWithIngressEmail(clusterID, "ingress@my-project.iam.gserviceaccount.com")
+			conditions, err := json.Marshal([]metav1.Condition{{
+				Type: tc.conditionType, Status: metav1.ConditionFalse,
+				Reason: tc.reason, Message: "ingress is not ready",
+			}})
+			require.NoError(t, err)
+
+			tr := mock.New()
+			tr.StatusOverrides[mcName+"/"+groupKey] = &transport.Status{
+				Conditions: []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+				ResourceStatuses: map[string]map[string]string{
+					hostedClusterResourceKey(cluster): {
+						"availableCondition": "True",
+						"versionConditions":  string(conditions),
+					},
+				},
+			}
+
+			r, store := buildReconciler(t, cluster, nil, tr, nil)
+			_, err = r.Reconcile(context.Background(), clusterReq(clusterID))
+			require.NoError(t, err)
+			require.True(t, store.statusWriter.called)
+
+			updated := store.statusWriter.captured.(*privatev1.Cluster)
+			available := meta.FindStatusCondition(updated.Status.Conditions, "HostedClusterAvailable")
+			require.NotNil(t, available)
+			require.Equal(t, metav1.ConditionFalse, available.Status)
+			require.Equal(t, tc.reason, available.Reason)
+
+			condition := meta.FindStatusCondition(updated.Status.Conditions, tc.conditionName)
+			require.NotNil(t, condition)
+			require.Equal(t, metav1.ConditionFalse, condition.Status)
+			require.Equal(t, tc.reason, condition.Reason)
+		})
+	}
+}
