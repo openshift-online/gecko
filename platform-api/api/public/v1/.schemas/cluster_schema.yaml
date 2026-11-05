@@ -368,6 +368,11 @@ properties:
                         x-kubernetes-validations:
                         - message: imageRegistryEmail is immutable
                           rule: self == oldSelf
+                      ingressEmail:
+                        type: string
+                        x-kubernetes-validations:
+                        - message: ingressEmail is immutable
+                          rule: self == oldSelf
                       networkEmail:
                         type: string
                         x-kubernetes-validations:
