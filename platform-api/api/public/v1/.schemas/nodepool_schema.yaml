@@ -164,6 +164,9 @@ properties:
             minLength: 1
             pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
             type: string
+          upgradeStartTime:
+            format: date-time
+            type: string
           version:
             maxLength: 63
             minLength: 1
@@ -285,6 +288,8 @@ properties:
         x-kubernetes-list-map-keys:
         - type
         x-kubernetes-list-type: map
+      version:
+        type: string
     type: object
 required:
 - spec

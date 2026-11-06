@@ -301,6 +301,12 @@ type NodePoolStatus struct {
 	// +patchStrategy=merge
 	// +patchMergeKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// version is the last OpenShift version observed as applied to this
+	// NodePool. It does not advance merely because an upgrade was requested.
+
+	// +optional
+	Version string `json:"version,omitempty"`
 }
 
 func init() { register(&NodePool{}, &NodePoolList{}) }
