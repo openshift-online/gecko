@@ -296,3 +296,16 @@ func TestClusterValidateUpdate_UnchangedStructuralErrors(t *testing.T) {
 	updated := old.DeepCopy()
 	assertMaintenanceValidationError(t, updated.ValidateUpdate(t.Context(), old), "frequency must be weekly")
 }
+
+func TestClusterRejectsNodePoolReleaseSchedule(t *testing.T) {
+	old := validClusterWithWindow()
+	updated := old.DeepCopy()
+	now := metav1.Now()
+	updated.Spec.Release.UpgradeStartTime = &now
+	if err := updated.ValidateCreate(t.Context()); err == nil {
+		t.Fatal("Cluster startTime must not be silently ignored")
+	}
+	if err := updated.ValidateUpdate(t.Context(), old); err == nil {
+		t.Fatal("Cluster startTime must not be silently ignored")
+	}
+}
