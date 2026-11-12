@@ -337,6 +337,17 @@ func buildHostedCluster(input Input, clusterNS string) ([]byte, error) {
 					"Ingress",
 				},
 			},
+			"etcd": map[string]any{
+				"managementType": "Managed",
+				"managed": map[string]any{
+					"storage": map[string]any{
+						"type": "PersistentVolume",
+						"persistentVolume": map[string]any{
+							"storageClassName": "premium-rwo",
+						},
+					},
+				},
+			},
 			"configuration": map[string]any{
 				"apiServer": map[string]any{
 					"servingCerts": map[string]any{
