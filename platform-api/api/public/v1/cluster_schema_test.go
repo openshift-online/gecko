@@ -56,6 +56,38 @@ func TestClusterSchemaRejectsInvalidReleaseVersions(t *testing.T) {
 	}
 }
 
+func TestClusterSchemaIngressEmail(t *testing.T) {
+	processor := newClusterSchemaProcessor(t)
+	valid := []string{
+		"ingress@test-project.iam.gserviceaccount.com",
+		"",
+	}
+	for _, email := range valid {
+		t.Run("accept-"+email, func(t *testing.T) {
+			cluster := validCluster("5.0.0-ec.6")
+			cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.IngressEmail = email
+			if errs := processor.Process(context.Background(), clusterAsMap(t, cluster), nil); len(errs) > 0 {
+				t.Fatalf("expected ingressEmail %q to pass schema validation, got: %v", email, errs)
+			}
+		})
+	}
+	for _, email := range []string{
+		"a@test-project.iam.gserviceaccount.com",
+		"Ingress@test-project.iam.gserviceaccount.com",
+		"x@y@test-project.iam.gserviceaccount.com",
+		"ingress@test-project.iam.gserviceaccount.comm",
+	} {
+		t.Run("reject-"+email, func(t *testing.T) {
+			cluster := validCluster("5.0.0-ec.6")
+			cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef.IngressEmail = email
+			errs := processor.Process(context.Background(), clusterAsMap(t, cluster), nil)
+			if len(errs) == 0 || !strings.Contains(errs.ToAggregate().Error(), "ingressEmail must be a valid GCP service account email") {
+				t.Fatalf("expected ingressEmail %q to fail schema validation, got: %v", email, errs)
+			}
+		})
+	}
+}
+
 func TestClusterSchemaChannelGroup(t *testing.T) {
 	processor := newClusterSchemaProcessor(t)
 	for _, group := range []string{"stable", "fast", "candidate", "eus", "nightly", "dev-preview", "a", strings.Repeat("a", 63)} {

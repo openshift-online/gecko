@@ -184,7 +184,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	}
 
 	// Write status conditions — only update if something changed.
-	statusChanged, err := r.applyStatusConditions(&cluster, mwStatus, enableIngress, includeIngressCertificate)
+	statusChanged, err := r.applyStatusConditions(&cluster, mwStatus, enableIngress, includeIngressCertificate, includeDefaultIngressCert)
 	if err != nil {
 		return reconcile.Result{}, fmt.Errorf("%s: apply status feedback: %w", adapterName, err)
 	}
@@ -373,7 +373,7 @@ func (r *Reconciler) setWaitingConditions(cluster *privatev1.Cluster, reason, me
 
 // applyStatusConditions derives conditions from the resource status and writes them to the cluster.
 // Returns true if any condition changed.
-func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus *transport.Status, enableIngress, ingressCertRequested bool) (bool, error) {
+func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus *transport.Status, enableIngress, ingressCertRequested, ingressCertApplied bool) (bool, error) {
 	gen := cluster.Generation
 
 	if mwStatus == nil {
@@ -511,6 +511,18 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	})
 
 	changed := a || b || d || resultChanged
+	changed = applyIngressConditions(cluster, mwStatus, ingressCredentials, ingressDefaultCert,
+		ingressCertRequested, ingressCertApplied, clusterNS, gen) || changed
+
+	return changed, nil
+}
+
+// applyIngressConditions writes the Gecko-owned ingress conditions: the
+// HyperShift-observed credentials and default-certificate sync, the
+// cert-manager certificate readiness, and the locally-owned reference marker.
+func applyIngressConditions(cluster *privatev1.Cluster, mwStatus *transport.Status, ingressCredentials, ingressDefaultCert *metav1.Condition,
+	ingressCertRequested, ingressCertApplied bool, clusterNS string, gen int64) bool {
+	changed := false
 	if ingressCredentials != nil {
 		changed = meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
 			Type:               "IngressCredentialsReady",
@@ -540,8 +552,20 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 			ObservedGeneration: gen,
 		}) || changed
 	}
-
-	return changed, nil
+	// The reference marker is owned by Gecko, not derived from HyperShift
+	// feedback: HyperShift can only report IngressDefaultCertificateSynced
+	// after the reference has been applied, so a feedback-derived marker could
+	// not cover the window between the first apply and the first report.
+	if ingressCertApplied {
+		changed = meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+			Type:               "IngressDefaultCertificateApplied",
+			Status:             metav1.ConditionTrue,
+			Reason:             "ReferenceApplied",
+			Message:            "HostedCluster references the ingress default certificate",
+			ObservedGeneration: gen,
+		}) || changed
+	}
+	return changed
 }
 
 // certificateReadyCondition derives a Ready-style condition from a cert-manager
@@ -590,9 +614,12 @@ func ingressCertificateReady(cluster *privatev1.Cluster) bool {
 
 // ingressDefaultCertificateApplied reports whether the HostedCluster already
 // references the ingress Certificate. Once referenced, keep the reference so a
-// transient feedback gap cannot remove it.
+// transient feedback gap cannot remove it. The marker is set by Gecko when the
+// reference is rendered, not derived from HyperShift feedback, so it also
+// covers the window before HyperShift first reports the reference.
 func ingressDefaultCertificateApplied(cluster *privatev1.Cluster) bool {
-	return meta.FindStatusCondition(cluster.Status.Conditions, "IngressDefaultCertificateReady") != nil
+	c := meta.FindStatusCondition(cluster.Status.Conditions, "IngressDefaultCertificateApplied")
+	return c != nil && c.Status == metav1.ConditionTrue
 }
 
 // applyHostedClusterResult writes HC-owned HostedCluster feedback to

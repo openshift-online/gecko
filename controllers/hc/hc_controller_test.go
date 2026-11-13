@@ -1607,6 +1607,71 @@ func TestReconcile_DefaultIngressCertificateStagedAfterReady(t *testing.T) {
 		ingressOperator["defaultCertificate"].(map[string]any)["name"])
 }
 
+// TestReconcile_DefaultIngressCertificateSurvivesEmptyCertRead verifies that
+// the defaultCertificate reference, once rendered, is not withdrawn when the
+// Certificate status read comes back present-but-empty before HyperShift has
+// first reported IngressDefaultCertificateSynced. The applied marker is owned
+// by Gecko, not derived from HyperShift feedback.
+func TestReconcile_DefaultIngressCertificateSurvivesEmptyCertRead(t *testing.T) {
+	clusterID := "cluster-ingress-empty-read"
+	mcName := "mc-cluster-1"
+	groupKey := mustClusterGroupKey("hyperfleet", clusterID)
+
+	cluster := clusterWithIngressEmail(clusterID, "ingress-op@my-project.iam.gserviceaccount.com")
+	cluster.Status.HostedClusterResult = &privatev1.HostedClusterResult{
+		ObservedConditions: []metav1.Condition{{
+			Type: "GCPACMECNAMEAvailable", Status: metav1.ConditionTrue, Reason: "GCPSuccess",
+		}},
+	}
+	// The certificate was Ready at the end of the previous reconcile...
+	cluster.Status.Conditions = []metav1.Condition{{
+		Type: "IngressCertificateReady", Status: metav1.ConditionTrue, Reason: "CertificateReady",
+	}}
+
+	tr := mock.New()
+	tr.StatusOverrides[mcName+"/"+groupKey] = &transport.Status{
+		Conditions: []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+		ResourceStatuses: map[string]map[string]string{
+			hostedClusterResourceKey(cluster): {"availableCondition": "True"},
+			// ...but this reconcile reads it back present-but-empty
+			// (KubeContent has not synced).
+			"cert-manager.io/v1/certificates/clusters-" + clusterID + "/ingress-default-cert": {},
+		},
+	}
+
+	r, storeClient := buildReconciler(t, cluster, nil, tr, nil)
+
+	// Reconcile 1: renders the reference and records the local marker even
+	// though the fresh certificate read is empty and HyperShift has not yet
+	// reported IngressDefaultCertificateSynced.
+	_, err := r.Reconcile(context.Background(), clusterReq(clusterID))
+	require.NoError(t, err)
+	require.Len(t, tr.ApplyCalls, 1)
+	hc := findManifest(t, tr.ApplyCalls[0].Manifests, "HostedCluster", cluster.Spec.SafeName)
+	require.Contains(t, hc["spec"].(map[string]any), "operatorConfiguration",
+		"the ready certificate must be referenced")
+
+	captured := storeClient.statusWriter.captured.(*privatev1.Cluster)
+	require.Equal(t, metav1.ConditionFalse,
+		meta.FindStatusCondition(captured.Status.Conditions, "IngressCertificateReady").Status,
+		"the empty certificate read must be reflected")
+	applied := meta.FindStatusCondition(captured.Status.Conditions, "IngressDefaultCertificateApplied")
+	require.NotNil(t, applied, "rendering the reference must set the Gecko-owned marker")
+	require.Equal(t, metav1.ConditionTrue, applied.Status)
+	require.Nil(t, meta.FindStatusCondition(captured.Status.Conditions, "IngressDefaultCertificateReady"),
+		"HyperShift has not reported the sync yet")
+
+	// Reconcile 2: same empty read, still no HyperShift report — the reference
+	// must survive.
+	storeClient.cluster = captured.DeepCopy()
+	_, err = r.Reconcile(context.Background(), clusterReq(clusterID))
+	require.NoError(t, err)
+	require.Len(t, tr.ApplyCalls, 2)
+	hc = findManifest(t, tr.ApplyCalls[1].Manifests, "HostedCluster", cluster.Spec.SafeName)
+	require.Contains(t, hc["spec"].(map[string]any), "operatorConfiguration",
+		"the reference must survive a transient empty certificate read before the first HyperShift report")
+}
+
 func TestReconcile_IngressConditionsGateAvailability(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

@@ -395,7 +395,10 @@ type ServiceAccountsRef struct {
 	//
 
 	// +optional
+	// +kubebuilder:validation:MinLength=37
+	// +kubebuilder:validation:MaxLength=85
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="ingressEmail is immutable"
+	// +kubebuilder:validation:XValidation:rule="self.matches('^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\\\.iam\\\\.gserviceaccount\\\\.com$')",message="ingressEmail must be a valid GCP service account email (format: name@project.iam.gserviceaccount.com)"
 	IngressEmail string `json:"ingressEmail,omitempty"`
 }
 
