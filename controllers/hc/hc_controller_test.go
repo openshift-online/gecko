@@ -1535,7 +1535,7 @@ func findManifest(t *testing.T, manifests [][]byte, kind, name string) map[strin
 func clusterWithIngressEmail(clusterID, email string) *privatev1.Cluster {
 	cluster := buildReadyCluster(clusterID, "4.15.0")
 	cluster.Spec.Platform.GCP.WorkloadIdentity.ServiceAccountsRef = &privatev1.ServiceAccountsRef{
-		IngressEmail: email,
+		IngressEmail: &email,
 	}
 	return cluster
 }

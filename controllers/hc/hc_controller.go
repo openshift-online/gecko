@@ -122,7 +122,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			storageEmail = sa.StorageEmail
 			imageRegistryEmail = sa.ImageRegistryEmail
 			networkEmail = sa.NetworkEmail
-			ingressEmail = sa.IngressEmail
+			if sa.IngressEmail != nil {
+				ingressEmail = *sa.IngressEmail
+			}
 		}
 	}
 

@@ -85,11 +85,11 @@ func (c *Cluster) validateIngressEmail() error {
 		return nil
 	}
 	email := gcp.WorkloadIdentity.ServiceAccountsRef.IngressEmail
-	if email == "" {
+	if email == nil || *email == "" {
 		return nil
 	}
 	suffix := "@" + gcp.ProjectID + ".iam.gserviceaccount.com"
-	if !strings.HasSuffix(email, suffix) {
+	if !strings.HasSuffix(*email, suffix) {
 		return fmt.Errorf("spec.platform.gcp.workloadIdentity.serviceAccountsRef.ingressEmail must belong to project %q", gcp.ProjectID)
 	}
 	return nil

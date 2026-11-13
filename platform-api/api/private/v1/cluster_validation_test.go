@@ -430,7 +430,7 @@ func clusterWithIngressEmail(projectID, email string) *Cluster {
 	c.Spec.Platform.GCP = &GCPClusterPlatform{
 		ProjectID: projectID,
 		WorkloadIdentity: WorkloadIdentitySpec{
-			ServiceAccountsRef: &ServiceAccountsRef{IngressEmail: email},
+			ServiceAccountsRef: &ServiceAccountsRef{IngressEmail: &email},
 		},
 	}
 	return c
