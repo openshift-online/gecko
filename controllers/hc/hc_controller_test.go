@@ -1672,6 +1672,72 @@ func TestReconcile_DefaultIngressCertificateSurvivesEmptyCertRead(t *testing.T) 
 		"the reference must survive a transient empty certificate read before the first HyperShift report")
 }
 
+// TestReconcile_IngressConditionsResetWhenObservationMissing verifies that
+// ingress conditions derived from HyperShift observations are marked Unknown
+// when fresh feedback no longer contains the observation, and that a
+// present-but-empty feedback read (no fresh data) leaves them untouched.
+func TestReconcile_IngressConditionsResetWhenObservationMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		hcFeedback map[string]string
+		wantStatus metav1.ConditionStatus
+		wantReason string
+	}{
+		{
+			name:       "fresh feedback without the observation resets to Unknown",
+			hcFeedback: map[string]string{"availableCondition": "True"},
+			wantStatus: metav1.ConditionUnknown,
+			wantReason: "ObservationNotReported",
+		},
+		{
+			name:       "empty feedback read preserves the last value",
+			hcFeedback: map[string]string{},
+			wantStatus: metav1.ConditionTrue,
+			wantReason: "AsExpected",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clusterID := "cluster-ingress-reset"
+			mcName := "mc-cluster-1"
+			groupKey := mustClusterGroupKey("hyperfleet", clusterID)
+
+			cluster := clusterWithIngressEmail(clusterID, "ingress-reset@my-project.iam.gserviceaccount.com")
+			// HyperShift previously reported both observations.
+			cluster.Status.HostedClusterResult = &privatev1.HostedClusterResult{
+				ObservedConditions: []metav1.Condition{
+					{Type: "IngressCredentialsFound", Status: metav1.ConditionTrue, Reason: "AsExpected"},
+					{Type: "IngressDefaultCertificateSynced", Status: metav1.ConditionTrue, Reason: "AsExpected"},
+				},
+			}
+			cluster.Status.Conditions = []metav1.Condition{
+				{Type: "IngressCredentialsReady", Status: metav1.ConditionTrue, Reason: "AsExpected"},
+				{Type: "IngressDefaultCertificateReady", Status: metav1.ConditionTrue, Reason: "AsExpected"},
+			}
+
+			tr := mock.New()
+			tr.StatusOverrides[mcName+"/"+groupKey] = &transport.Status{
+				Conditions: []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+				ResourceStatuses: map[string]map[string]string{
+					hostedClusterResourceKey(cluster): tc.hcFeedback,
+				},
+			}
+
+			r, storeClient := buildReconciler(t, cluster, nil, tr, nil)
+			_, err := r.Reconcile(context.Background(), clusterReq(clusterID))
+			require.NoError(t, err)
+			require.True(t, storeClient.statusWriter.called)
+
+			updated := storeClient.statusWriter.captured.(*privatev1.Cluster)
+			for _, conditionType := range []string{"IngressCredentialsReady", "IngressDefaultCertificateReady"} {
+				condition := meta.FindStatusCondition(updated.Status.Conditions, conditionType)
+				require.NotNil(t, condition)
+				require.Equal(t, tc.wantStatus, condition.Status, conditionType)
+				require.Equal(t, tc.wantReason, condition.Reason, conditionType)
+			}
+		})
+	}
+}
+
 func TestReconcile_IngressConditionsGateAvailability(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

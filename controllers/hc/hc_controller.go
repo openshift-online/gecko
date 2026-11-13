@@ -514,7 +514,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 
 	changed := a || b || d || resultChanged
 	changed = applyIngressConditions(cluster, mwStatus, ingressCredentials, ingressDefaultCert,
-		ingressCertRequested, ingressCertApplied, clusterNS, gen) || changed
+		ingressCertRequested, ingressCertApplied, hasHCFeedback, clusterNS, gen) || changed
 
 	return changed, nil
 }
@@ -523,7 +523,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 // HyperShift-observed credentials and default-certificate sync, the
 // cert-manager certificate readiness, and the locally-owned reference marker.
 func applyIngressConditions(cluster *privatev1.Cluster, mwStatus *transport.Status, ingressCredentials, ingressDefaultCert *metav1.Condition,
-	ingressCertRequested, ingressCertApplied bool, clusterNS string, gen int64) bool {
+	ingressCertRequested, ingressCertApplied, hasHCFeedback bool, clusterNS string, gen int64) bool {
 	changed := false
 	if ingressCredentials != nil {
 		changed = meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
@@ -567,7 +567,37 @@ func applyIngressConditions(cluster *privatev1.Cluster, mwStatus *transport.Stat
 			ObservedGeneration: gen,
 		}) || changed
 	}
+	// When fresh HostedCluster feedback omits an ingress observation that was
+	// previously reported, mark the derived condition Unknown rather than
+	// leaving the last value in place: conditions are consumed by automations
+	// and must not go stale. A missing feedback document (empty read) is not
+	// evidence the observation disappeared, so the reset only applies to fresh
+	// feedback.
+	if hasHCFeedback {
+		if ingressCredentials == nil {
+			changed = resetConditionToUnknown(cluster, "IngressCredentialsReady", "IngressCredentialsFound", gen) || changed
+		}
+		if ingressDefaultCert == nil {
+			changed = resetConditionToUnknown(cluster, "IngressDefaultCertificateReady", "IngressDefaultCertificateSynced", gen) || changed
+		}
+	}
 	return changed
+}
+
+// resetConditionToUnknown marks an existing condition Unknown, reporting which
+// HyperShift observation is no longer provided. Conditions that do not exist
+// yet are left absent.
+func resetConditionToUnknown(cluster *privatev1.Cluster, conditionType, observation string, gen int64) bool {
+	if meta.FindStatusCondition(cluster.Status.Conditions, conditionType) == nil {
+		return false
+	}
+	return meta.SetStatusCondition(&cluster.Status.Conditions, metav1.Condition{
+		Type:               conditionType,
+		Status:             metav1.ConditionUnknown,
+		Reason:             "ObservationNotReported",
+		Message:            "HyperShift is not reporting " + observation,
+		ObservedGeneration: gen,
+	})
 }
 
 // certificateReadyCondition derives a Ready-style condition from a cert-manager
