@@ -77,6 +77,8 @@ func TestClusterSchemaIngressEmail(t *testing.T) {
 		// *string-optional, so unset means omitted or null, not "".
 		"",
 		"a@test-project.iam.gserviceaccount.com",
+		"@test-project.iam.gserviceaccount.com",
+		"ing ress@test-project.iam.gserviceaccount.com",
 		"Ingress@test-project.iam.gserviceaccount.com",
 		"x@y@test-project.iam.gserviceaccount.com",
 		"ingress@test-project.iam.gserviceaccount.comm",
