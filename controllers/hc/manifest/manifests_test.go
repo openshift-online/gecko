@@ -362,3 +362,21 @@ func TestBuild_PullSecretStoreName(t *testing.T) {
 		require.Equal(t, "gcp-secret-manager", storeRef["name"])
 	})
 }
+
+func TestBuild_EtcdSpec(t *testing.T) {
+	manifests, err := manifest.Build(testInput())
+	require.NoError(t, err)
+
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal(manifests[3], &obj))
+	spec := obj["spec"].(map[string]any)
+	etcd := spec["etcd"].(map[string]any)
+	require.Equal(t, "Managed", etcd["managementType"])
+
+	managed := etcd["managed"].(map[string]any)
+	storage := managed["storage"].(map[string]any)
+	require.Equal(t, "PersistentVolume", storage["type"])
+
+	pv := storage["persistentVolume"].(map[string]any)
+	require.Equal(t, "premium-rwo", pv["storageClassName"])
+}
