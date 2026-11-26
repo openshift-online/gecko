@@ -162,6 +162,12 @@ type errTransport struct {
 func (e *errTransport) Apply(_ context.Context, _, _ string, _ [][]byte) (*transport.Status, error) {
 	return e.applyResult, e.applyErr
 }
+func (e *errTransport) Observe(_ context.Context, _, _ string, _ []transport.ResourceRef) error {
+	return nil
+}
+func (e *errTransport) ReleaseObserved(_ context.Context, _, _ string) error {
+	return nil
+}
 func (e *errTransport) GetStatus(_ context.Context, _, _ string) (*transport.Status, error) {
 	return nil, nil
 }

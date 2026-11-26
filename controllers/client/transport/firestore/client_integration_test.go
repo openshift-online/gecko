@@ -1442,3 +1442,182 @@ func TestIntegration_GetStatus_UsesSpecUpdateTimeForStaleness(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, status.Stale, "status observing the current spec should not be stale")
 }
+
+var spannerEtcdRef = transport.ResourceRef{
+	Group:     "etcd.gcp.managed.openshift.io",
+	Version:   "v1alpha1",
+	Resource:  "spanneretcds",
+	Namespace: "clusters-cluster-abc",
+	Name:      "my-hc",
+}
+
+func TestIntegration_Observe_WritesReadDesireOnly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}), "Observe is idempotent")
+
+	applySnaps, err := specsClient.Collection("applydesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, applySnaps, "observed objects must never be applied")
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, readSnaps, 1)
+	var rd kubeapplier.ReadDesire
+	require.NoError(t, readSnaps[0].DataTo(&rd))
+	assert.Equal(t, "spanneretcds", rd.Spec.TargetItem.Resource)
+	assert.Equal(t, "my-hc", rd.Spec.TargetItem.Name)
+}
+
+func TestIntegration_Observe_ReportedByGetStatus(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	statusClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "status", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, statusClient)
+	cleanupCollections(t, []*firestore.Client{specsClient, statusClient}, "applydesires", "readdesires", "deletedesires")
+
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+
+	st, err := c.GetStatus(ctx, testMCName, testGroupKey)
+	require.NoError(t, err)
+	assert.True(t, st.Stale, "an observed object without status is not yet trustworthy")
+	assert.Contains(t, st.ResourceStatuses, spannerEtcdRef.Key())
+}
+
+func TestIntegration_Delete_ReleasesObservedTargets(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	otherGroupKey := "projects/test-ns/clusters/other"
+	otherRef := spannerEtcdRef
+	otherRef.Namespace = "clusters-other"
+
+	_, err = c.Apply(ctx, testMCName, testGroupKey, [][]byte{hcManifest(t, testClusterID, "my-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	_, err = c.Apply(ctx, testMCName, otherGroupKey, [][]byte{hcManifest(t, "other", "other-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, otherGroupKey, []transport.ResourceRef{otherRef}))
+
+	require.NoError(t, c.Delete(ctx, testMCName, testGroupKey))
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, readSnaps, "observed targets are released with the cluster")
+
+	deleteSnaps, err := specsClient.Collection("deletedesires").Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, deleteSnaps, 1, "only the applied HostedCluster is deleted, never the observed object")
+	var dd kubeapplier.DeleteDesire
+	require.NoError(t, deleteSnaps[0].DataTo(&dd))
+	assert.Equal(t, "hostedclusters", dd.Spec.TargetItem.Resource)
+
+	otherReads, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", otherGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Len(t, otherReads, 2, "other clusters keep their applied and observed read desires")
+	otherApplies, err := specsClient.Collection("applydesires").Where("spec.groupKey", "==", otherGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Len(t, otherApplies, 1, "other clusters keep their applied resources")
+}
+
+func TestIntegration_Delete_ReleasesObservedTargetsWithoutApplyDesires(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	require.NoError(t, c.Delete(ctx, testMCName, testGroupKey))
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, readSnaps)
+}
+
+func TestIntegration_ReleaseObserved_LeavesAppliedResourcesAlone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	_, err = c.Apply(ctx, testMCName, testGroupKey, [][]byte{hcManifest(t, testClusterID, "my-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+
+	require.NoError(t, c.ReleaseObserved(ctx, testMCName, testGroupKey))
+	require.NoError(t, c.ReleaseObserved(ctx, testMCName, testGroupKey), "ReleaseObserved is idempotent")
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, readSnaps, 1, "only the observed target is released")
+	var rd kubeapplier.ReadDesire
+	require.NoError(t, readSnaps[0].DataTo(&rd))
+	assert.Equal(t, "hostedclusters", rd.Spec.TargetItem.Resource, "the applied HostedCluster keeps reporting status")
+
+	applySnaps, err := specsClient.Collection("applydesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Len(t, applySnaps, 1)
+	deleteSnaps, err := specsClient.Collection("deletedesires").Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, deleteSnaps, "releasing observed targets never starts a deletion")
+}
+
+func TestIntegration_ReleaseObserved_WithoutAnyApplyDesires(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	otherGroupKey := "projects/test-ns/clusters/other"
+	otherRef := spannerEtcdRef
+	otherRef.Namespace = "clusters-other"
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	require.NoError(t, c.Observe(ctx, testMCName, otherGroupKey, []transport.ResourceRef{otherRef}))
+
+	require.NoError(t, c.ReleaseObserved(ctx, testMCName, testGroupKey))
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, readSnaps)
+	otherSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", otherGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Len(t, otherSnaps, 1, "other clusters are untouched")
+}

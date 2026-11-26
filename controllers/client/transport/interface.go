@@ -13,6 +13,20 @@ func ResourceKey(group, version, resource, namespace, name string) string {
 	return fmt.Sprintf("%s/%s/%s/%s/%s", group, version, resource, namespace, name)
 }
 
+// ResourceRef identifies a Kubernetes object on a management cluster.
+type ResourceRef struct {
+	Group     string
+	Version   string
+	Resource  string
+	Namespace string
+	Name      string
+}
+
+// Key returns the identity key used in ResourceStatuses for the object.
+func (r ResourceRef) Key() string {
+	return ResourceKey(r.Group, r.Version, r.Resource, r.Namespace, r.Name)
+}
+
 // Status holds the status read back from the transport after applying resources.
 type Status struct {
 	// Conditions contains top-level conditions (Applied, Available, etc.).
@@ -67,10 +81,22 @@ type DeleteFailure struct {
 type Client interface {
 	// Apply creates or updates resources on the target cluster and returns current status.
 	Apply(ctx context.Context, targetCluster, groupKey string, manifests [][]byte) (*Status, error)
+	// Observe registers read-only targets for the given groupKey: objects that
+	// another component owns and creates, whose status is reported in
+	// ResourceStatuses but which are never applied or deleted by Gecko.
+	// Registration is idempotent and the targets are released by
+	// ReleaseObserved, and by Delete once its resources are gone.
+	Observe(ctx context.Context, targetCluster, groupKey string, refs []ResourceRef) error
 	// GetStatus compares the expected Desire documents in the specs database
 	// with the statuses currently available for the given groupKey.
 	GetStatus(ctx context.Context, targetCluster, groupKey string) (*Status, error)
-	// Delete removes all resources for the given groupKey from the target cluster.
+	// ReleaseObserved removes the read-only targets registered by Observe for the
+	// given groupKey. Targets of resources that are still applied are left alone,
+	// so it is safe to call at any point of a deletion, including when nothing was
+	// ever applied. It is idempotent.
+	ReleaseObserved(ctx context.Context, targetCluster, groupKey string) error
+	// Delete removes all resources for the given groupKey from the target cluster
+	// and releases its read-only targets.
 	Delete(ctx context.Context, targetCluster, groupKey string) error
 	// GetDeleteStatus checks the status of delete operations for the given groupKey.
 	GetDeleteStatus(ctx context.Context, targetCluster, groupKey string) (*DeleteStatus, error)

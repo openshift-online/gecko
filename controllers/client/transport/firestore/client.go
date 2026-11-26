@@ -177,6 +177,40 @@ func (c *Client) Apply(ctx context.Context, targetCluster, groupKey string, mani
 	return c.GetStatus(ctx, targetCluster, groupKey)
 }
 
+// Observe writes one ReadDesire document per ref to the specs DB without a
+// matching ApplyDesire, so the object's status is returned by GetStatus while
+// the object stays owned by another component.
+func (c *Client) Observe(ctx context.Context, targetCluster, groupKey string, refs []transport.ResourceRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	mc, err := c.clients(ctx, targetCluster)
+	if err != nil {
+		return err
+	}
+
+	batch := mc.specs.BulkWriter(ctx)
+	jobs := make([]*firestore.BulkWriterJob, 0, len(refs))
+	for _, r := range refs {
+		ref := kubeapplier.ResourceReference{
+			Group: r.Group, Version: r.Version, Resource: r.Resource, Namespace: r.Namespace, Name: r.Name,
+		}
+		readID, readData := buildReadDesireDoc(groupKey, targetCluster, ref)
+		job, err := batch.Set(mc.specs.Collection(collectionReadDesires).Doc(readID), readData)
+		if err != nil {
+			return fmt.Errorf("firestore transport: Observe %s/%s set read desire: %w", targetCluster, groupKey, err)
+		}
+		jobs = append(jobs, job)
+	}
+	batch.Flush()
+	for _, job := range jobs {
+		if _, err := job.Results(); err != nil {
+			return fmt.Errorf("firestore transport: Observe %s/%s write error: %w", targetCluster, groupKey, err)
+		}
+	}
+	return nil
+}
+
 // GetStatus compares expected Desire documents with the ApplyDesire and
 // ReadDesire statuses currently available for the given groupKey.
 func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) (*transport.Status, error) {
@@ -306,7 +340,7 @@ func (c *Client) Delete(ctx context.Context, targetCluster, groupKey string) err
 
 	if len(applySnaps) == 0 {
 		c.log.Infof(ctx, "firestore transport: Delete %s/%s: no apply desires found, nothing to delete", targetCluster, groupKey)
-		return nil
+		return c.releaseObserved(ctx, mc, targetCluster, groupKey)
 	}
 
 	// Process in chunks to stay within Firestore's 500-write-per-transaction
@@ -358,7 +392,65 @@ func (c *Client) Delete(ctx context.Context, targetCluster, groupKey string) err
 		return fmt.Errorf("firestore transport: Delete %s/%s: %d chunk(s) failed: %w", targetCluster, groupKey, len(errs), errors.Join(errs...))
 	}
 
+	if err := c.releaseObserved(ctx, mc, targetCluster, groupKey); err != nil {
+		return err
+	}
+
 	c.log.Infof(ctx, "firestore transport: deleted %d resources for %s/%s", len(applySnaps), targetCluster, groupKey)
+	return nil
+}
+
+// ReleaseObserved removes the ReadDesires registered by Observe for the
+// groupKey. A ReadDesire that shares its document ID with an ApplyDesire belongs
+// to an applied resource and is left for Delete, which removes the pair together.
+func (c *Client) ReleaseObserved(ctx context.Context, targetCluster, groupKey string) error {
+	mc, err := c.clients(ctx, targetCluster)
+	if err != nil {
+		return err
+	}
+	return c.releaseObserved(ctx, mc, targetCluster, groupKey)
+}
+
+func (c *Client) releaseObserved(ctx context.Context, mc *mcClients, targetCluster, groupKey string) error {
+	readSnaps, err := mc.specs.Collection(collectionReadDesires).
+		Where("spec.groupKey", "==", groupKey).
+		Documents(ctx).GetAll()
+	if err != nil {
+		return fmt.Errorf("firestore transport: ReleaseObserved %s/%s query read desires: %w", targetCluster, groupKey, err)
+	}
+	if len(readSnaps) == 0 {
+		return nil
+	}
+
+	applySnaps, err := mc.specs.Collection(collectionApplyDesires).
+		Where("spec.groupKey", "==", groupKey).
+		Documents(ctx).GetAll()
+	if err != nil {
+		return fmt.Errorf("firestore transport: ReleaseObserved %s/%s query apply desires: %w", targetCluster, groupKey, err)
+	}
+	applied := make(map[string]bool, len(applySnaps))
+	for _, snap := range applySnaps {
+		applied[snap.Ref.ID] = true
+	}
+
+	batch := mc.specs.BulkWriter(ctx)
+	var jobs []*firestore.BulkWriterJob
+	for _, snap := range readSnaps {
+		if applied[snap.Ref.ID] {
+			continue
+		}
+		job, err := batch.Delete(snap.Ref)
+		if err != nil {
+			return fmt.Errorf("firestore transport: ReleaseObserved %s/%s delete read desire: %w", targetCluster, groupKey, err)
+		}
+		jobs = append(jobs, job)
+	}
+	batch.Flush()
+	for _, job := range jobs {
+		if _, err := job.Results(); err != nil {
+			return fmt.Errorf("firestore transport: ReleaseObserved %s/%s read desire write error: %w", targetCluster, groupKey, err)
+		}
+	}
 	return nil
 }
 
