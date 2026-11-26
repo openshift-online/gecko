@@ -468,3 +468,65 @@ func TestBuild_EtcdSpec(t *testing.T) {
 	pv := storage["persistentVolume"].(map[string]any)
 	require.Equal(t, "premium-rwo", pv["storageClassName"])
 }
+
+func TestBuild_SpannerEtcd_OptedIn(t *testing.T) {
+	input := testInput()
+	input.SpannerEtcd = true
+
+	manifests, err := manifest.Build(input)
+	require.NoError(t, err)
+
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal(manifests[3], &obj))
+
+	annotations := obj["metadata"].(map[string]any)["annotations"].(map[string]any)
+	require.Equal(t, "true", annotations["gcp.managed.openshift.io/spanner-enabled"])
+
+	etcd := obj["spec"].(map[string]any)["etcd"].(map[string]any)
+	require.Equal(t, "Unmanaged", etcd["managementType"])
+	require.NotContains(t, etcd, "managed", "Unmanaged etcd must not carry the Managed storage configuration")
+
+	unmanaged := etcd["unmanaged"].(map[string]any)
+	require.Equal(t, "https://spanner-etcd:2379", unmanaged["endpoint"])
+	clientSecret := unmanaged["tls"].(map[string]any)["clientSecret"].(map[string]any)
+	require.Equal(t, "my-cluster-safe-spanner-etcd-client", clientSecret["name"])
+}
+
+func TestBuild_SpannerEtcd_NotOptedInIsUnchanged(t *testing.T) {
+	input := testInput()
+	optedOut := input
+	optedOut.SpannerEtcd = false
+
+	want, err := manifest.Build(input)
+	require.NoError(t, err)
+	got, err := manifest.Build(optedOut)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal(got[3], &obj))
+	annotations := obj["metadata"].(map[string]any)["annotations"].(map[string]any)
+	require.NotContains(t, annotations, "gcp.managed.openshift.io/spanner-enabled")
+
+	etcd := obj["spec"].(map[string]any)["etcd"].(map[string]any)
+	require.Equal(t, "Managed", etcd["managementType"])
+	require.NotContains(t, etcd, "unmanaged")
+}
+
+func TestBuild_SpannerEtcd_OnlyChangesHostedCluster(t *testing.T) {
+	input := testInput()
+	managed, err := manifest.Build(input)
+	require.NoError(t, err)
+	input.SpannerEtcd = true
+	spanner, err := manifest.Build(input)
+	require.NoError(t, err)
+
+	require.Len(t, spanner, len(managed))
+	for i := range managed {
+		if i == 3 {
+			require.NotEqual(t, managed[i], spanner[i], "the HostedCluster carries the etcd contract")
+			continue
+		}
+		require.Equal(t, managed[i], spanner[i], "manifest %d is independent of the etcd backend", i)
+	}
+}

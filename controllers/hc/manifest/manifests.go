@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+
+	"github.com/openshift-online/gecko/controllers/util/constants"
 )
 
 // Input holds all parameters needed to build the HC manifests.
@@ -43,6 +45,7 @@ type Input struct {
 	CAPGImage                    string            // optional — set CAPG annotation if non-empty
 	Slug                         string            // default: "user" (username slug for DNS names)
 	ResourceLabels               map[string]string // optional — sets spec.platform.gcp.resourceLabels on the HostedCluster CR
+	SpannerEtcd                  bool              // opt the HostedCluster in to socketcd's Spanner-backed Unmanaged etcd; immutable once created
 }
 
 // Build constructs raw JSON bytes for each manifest resource from the given input.
@@ -329,6 +332,9 @@ func buildHostedCluster(input Input, clusterNS string) ([]byte, error) {
 	if input.CAPGImage != "" {
 		annotations["hypershift.openshift.io/capi-provider-gcp-image"] = input.CAPGImage
 	}
+	if input.SpannerEtcd {
+		annotations[constants.AnnotationSpannerEnabled] = "true"
+	}
 
 	obj := map[string]any{
 		"apiVersion": "hypershift.openshift.io/v1beta1",
@@ -405,17 +411,7 @@ func buildHostedCluster(input Input, clusterNS string) ([]byte, error) {
 				},
 			},
 			"capabilities": buildCapabilities(input),
-			"etcd": map[string]any{
-				"managementType": "Managed",
-				"managed": map[string]any{
-					"storage": map[string]any{
-						"type": "PersistentVolume",
-						"persistentVolume": map[string]any{
-							"storageClassName": "premium-rwo",
-						},
-					},
-				},
-			},
+			"etcd":         buildEtcd(input),
 			"configuration": map[string]any{
 				"apiServer": map[string]any{
 					"servingCerts": map[string]any{
@@ -470,6 +466,37 @@ func buildHostedCluster(input Input, clusterNS string) ([]byte, error) {
 		return nil, fmt.Errorf("hc manifest: marshal hosted cluster: %w", err)
 	}
 	return raw, nil
+}
+
+// buildEtcd returns the HostedCluster etcd configuration. HyperShift does not
+// allow the management type to change after creation, so opted-in clusters get
+// the socketcd contract at creation: an Unmanaged etcd served by a Service in
+// the control plane namespace, with a client Secret that socketcd writes.
+func buildEtcd(input Input) map[string]any {
+	if input.SpannerEtcd {
+		return map[string]any{
+			"managementType": "Unmanaged",
+			"unmanaged": map[string]any{
+				"endpoint": fmt.Sprintf("https://%s:%d", constants.SpannerEtcdServiceName, constants.SpannerEtcdPort),
+				"tls": map[string]any{
+					"clientSecret": map[string]any{
+						"name": input.ClusterName + constants.SpannerEtcdClientSecretSuffix,
+					},
+				},
+			},
+		}
+	}
+	return map[string]any{
+		"managementType": "Managed",
+		"managed": map[string]any{
+			"storage": map[string]any{
+				"type": "PersistentVolume",
+				"persistentVolume": map[string]any{
+					"storageClassName": "premium-rwo",
+				},
+			},
+		},
+	}
 }
 
 // buildCapabilities keeps the existing disabled capabilities and enables
