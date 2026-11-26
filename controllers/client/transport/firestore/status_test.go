@@ -185,6 +185,65 @@ func TestExtractResourceStatuses_NodePool(t *testing.T) {
 	assert.Equal(t, "True", statuses[key]["allNodesHealthyCondition"])
 }
 
+func TestExtractResourceStatuses_SpannerEtcd(t *testing.T) {
+	ref := kubeapplier.ResourceReference{
+		Group: "etcd.gcp.managed.openshift.io", Version: "v1alpha1",
+		Resource: "spanneretcds", Namespace: "clusters-abc", Name: "my-hc",
+	}
+	key := "etcd.gcp.managed.openshift.io/v1alpha1/spanneretcds/clusters-abc/my-hc"
+
+	for _, tc := range []struct {
+		name       string
+		conditions []any
+		want       map[string]string
+	}{
+		{
+			name: "ready",
+			conditions: []any{
+				map[string]any{"type": "BackendReady", "status": "True"},
+				map[string]any{"type": "Ready", "status": "True", "reason": "AsExpected"},
+			},
+			want: map[string]string{"readyCondition": "True", "readyConditionReason": "AsExpected"},
+		},
+		{
+			name: "failing stage is reported through Ready",
+			conditions: []any{
+				map[string]any{"type": "EtcdConfigValid", "status": "True"},
+				map[string]any{"type": "Ready", "status": "False", "reason": "WaitingForBackend", "message": "BackendReady: Spanner instance not ready"},
+			},
+			want: map[string]string{
+				"readyCondition":        "False",
+				"readyConditionReason":  "WaitingForBackend",
+				"readyConditionMessage": "BackendReady: Spanner instance not ready",
+			},
+		},
+		{
+			name:       "no Ready condition yet",
+			conditions: []any{map[string]any{"type": "EtcdConfigValid", "status": "True"}},
+			want:       map[string]string{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{"status": map[string]any{"conditions": tc.conditions}})
+			require.NoError(t, err)
+
+			statuses, err := extractResourceStatuses([]kubeapplier.ReadDesire{makeReadDesire(ref, raw)})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, statuses[key])
+		})
+	}
+}
+
+func TestExtractResourceStatuses_SpannerEtcd_NotFoundIsEmpty(t *testing.T) {
+	ref := kubeapplier.ResourceReference{
+		Group: "etcd.gcp.managed.openshift.io", Version: "v1alpha1",
+		Resource: "spanneretcds", Namespace: "clusters-abc", Name: "my-hc",
+	}
+	statuses, err := extractResourceStatuses([]kubeapplier.ReadDesire{makeReadDesire(ref, nil)})
+	require.NoError(t, err)
+	assert.Empty(t, statuses["etcd.gcp.managed.openshift.io/v1alpha1/spanneretcds/clusters-abc/my-hc"])
+}
+
 func TestExtractResourceStatuses_NilKubeContent(t *testing.T) {
 	ref := kubeapplier.ResourceReference{
 		Group: "hypershift.openshift.io", Version: "v1beta1",

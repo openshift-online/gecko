@@ -85,6 +85,8 @@ func aggregateConditions(desires []kubeapplier.ApplyDesire) []metav1.Condition {
 // version, desiredVersion, availableVersions, and versionConditions.
 // For NodePool resources it extracts: readyCondition, allNodesHealthyCondition.
 // For Certificate resources it extracts: readyCondition.
+// For SpannerEtcd resources it extracts: readyCondition, readyConditionReason,
+// readyConditionMessage.
 // Other resources: empty inner map (no known fields to extract).
 func extractResourceStatuses(reads []kubeapplier.ReadDesire) (map[string]map[string]string, error) {
 	result := make(map[string]map[string]string, len(reads))
@@ -106,6 +108,8 @@ func extractResourceStatuses(reads []kubeapplier.ReadDesire) (map[string]map[str
 			fields, err = extractNPFields(rd.Status.KubeContent.Raw)
 		case ref.Resource == "certificates" && ref.Group == "cert-manager.io":
 			fields, err = extractCertFields(rd.Status.KubeContent.Raw)
+		case ref.Resource == constants.SocketCDResource && ref.Group == constants.SocketCDGroup:
+			fields, err = extractSpannerEtcdFields(rd.Status.KubeContent.Raw)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("extract resource status %s: %w", key, err)
@@ -282,6 +286,46 @@ func extractCertFields(raw []byte) (map[string]string, error) {
 			fields["readyCondition"] = c.Status
 			break
 		}
+	}
+
+	return fields, nil
+}
+
+// extractSpannerEtcdFields extracts SpannerEtcd status fields from raw live-object JSON.
+// socketcd summarizes its stages in the Ready condition, whose reason and
+// message name the first stage that is not ready.
+//   - readyCondition:        .status.conditions[type=Ready].status
+//   - readyConditionReason:  .status.conditions[type=Ready].reason
+//   - readyConditionMessage: .status.conditions[type=Ready].message
+func extractSpannerEtcdFields(raw []byte) (map[string]string, error) {
+	fields := map[string]string{}
+
+	var obj struct {
+		Status struct {
+			Conditions []struct {
+				Type    string `json:"type"`
+				Status  string `json:"status"`
+				Reason  string `json:"reason"`
+				Message string `json:"message"`
+			} `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("unmarshal SpannerEtcd live object: %w", err)
+	}
+
+	for _, c := range obj.Status.Conditions {
+		if c.Type != "Ready" {
+			continue
+		}
+		fields["readyCondition"] = c.Status
+		if c.Reason != "" {
+			fields["readyConditionReason"] = c.Reason
+		}
+		if c.Message != "" {
+			fields["readyConditionMessage"] = c.Message
+		}
+		break
 	}
 
 	return fields, nil
