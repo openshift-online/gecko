@@ -26,6 +26,7 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 		customerLabelsFile  string
 		pullSecretStoreName string
 		pullSecretGCPKey    string
+		spannerEtcdEnabled  bool
 	)
 
 	cmd := &cobra.Command{
@@ -59,7 +60,8 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 				return fmt.Errorf("index nodepools by cluster ID: %w", err)
 			}
 
-			rec := hc.New(t, log, mgr.GetClient(), customerLabels, pullSecretStoreName, pullSecretGCPKey)
+			rec := hc.New(t, log, mgr.GetClient(), customerLabels, pullSecretStoreName, pullSecretGCPKey,
+				hc.WithSpannerEtcd(spannerEtcdEnabled))
 
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&privatev1.Cluster{}).
@@ -77,6 +79,10 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&customerLabelsFile, "customer-labels-file", "", "Path to JSON file containing customer-facing GCP resource labels (omit to disable)")
 	cmd.Flags().StringVar(&pullSecretStoreName, "pull-secret-store-name", "gcp-secret-manager", "External Secrets ClusterSecretStore name for HostedCluster pull secret")
 	cmd.Flags().StringVar(&pullSecretGCPKey, "pull-secret-gcp-key", "default-openshift-pull-secret", "GCP Secret Manager key used for HostedCluster pull secret")
+
+	cmd.Flags().BoolVar(&spannerEtcdEnabled, "spanner-etcd-enabled", false,
+		"Create new HostedClusters with socketcd's Spanner-backed Unmanaged etcd instead of Managed etcd. "+
+			"HyperShift does not allow the etcd management type to change after creation, so this only affects clusters created while it is set")
 
 	return cmd
 }

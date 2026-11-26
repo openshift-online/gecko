@@ -16,6 +16,14 @@ pullSecret:
   storeName: gcp-secret-manager
   gcpKey: default-openshift-pull-secret
 
+# Spanner-backed etcd through socketcd. When enabled, new HostedClusters are
+# created with Unmanaged etcd and socketcd provisions the backend. HyperShift
+# does not allow the etcd management type to change after creation, so this only
+# affects clusters created while it is enabled. Requires socketcd on the
+# management clusters.
+spannerEtcd:
+  enabled: false
+
 # JSON-encoded customer-facing GCP resource labels (e.g., goog-partner-solution).
 # Injected by ArgoCD from the cluster secret meta_customer_labels.
 # Default to empty object if not provided.
