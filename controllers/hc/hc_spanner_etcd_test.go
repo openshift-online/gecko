@@ -245,12 +245,15 @@ func TestReconcile_SpannerEtcd_ReconcileIsIdempotent(t *testing.T) {
 	require.Len(t, tr.ObserveCalls, 2, "the read-only target is re-registered every reconcile")
 }
 
-func TestReconcile_SpannerEtcd_DisablingRemovesBackendCondition(t *testing.T) {
-	cluster := buildReadyCluster("cluster-spanner", "4.15.0")
+// A cluster that does not use the Spanner backend has nothing observing it, so a
+// leftover backend condition would only ever go stale.
+func TestReconcile_SpannerEtcd_ManagedClusterDropsALeftoverBackendCondition(t *testing.T) {
+	cluster := buildReadyCluster("cluster-managed", "4.15.0")
+	cluster.Annotations = map[string]string{constants.AnnotationEtcdBackend: constants.EtcdBackendManaged}
 	cluster.Status.Conditions = []metav1.Condition{{
 		Type: "EtcdBackendReady", Status: metav1.ConditionFalse, Reason: "WaitingForBackend", ObservedGeneration: 2,
 	}}
-	r, store, tr := spannerReconciler(t, cluster, false, nil, "True")
+	r, store, tr := spannerReconciler(t, cluster, true, nil, "True")
 
 	_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
 	require.NoError(t, err)
