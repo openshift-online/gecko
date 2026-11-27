@@ -29,7 +29,10 @@ const (
 	NodePoolClusterIDField = "spec.clusterID"
 
 	requeuePending = 15 * time.Second
-	requeueStable  = 5 * time.Minute
+	// requeueCorrected is the short delay after a recorded etcd backend is
+	// corrected, so the next reconcile applies the right type without waiting.
+	requeueCorrected = time.Second
+	requeueStable    = 5 * time.Minute
 )
 
 // Reconciler implements the hc-controller reconcile loop.
@@ -198,11 +201,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, r.preparationFailure(ctx, &cluster, err)
 	}
 
-	if spanner {
-		spannerEtcd := spannerEtcdRef(&cluster, safeName)
-		if err := r.transport.Observe(ctx, placement.ManagementClusterName, groupKey, []transport.ResourceRef{spannerEtcd}); err != nil {
-			return reconcile.Result{}, fmt.Errorf("%s: observe spanner etcd: %w", adapterName, err)
-		}
+	if err := r.observeBackend(ctx, &cluster, spanner, placement.ManagementClusterName, groupKey, safeName); err != nil {
+		return reconcile.Result{}, err
 	}
 
 	mwStatus, err := r.applyResources(ctx, &cluster, placement.ManagementClusterName, groupKey, manifests)
@@ -214,6 +214,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if mwStatus != nil && mwStatus.Stale {
 		log.Infof(ctx, "hc-controller: cluster %s status is stale, requeueing after %s", req.Name, requeuePending)
 		return reconcile.Result{RequeueAfter: requeuePending}, nil
+	}
+
+	// The live HostedCluster has the final say on its etcd type.
+	corrected, err := r.correctEtcdBackend(ctx, &cluster, placement.ManagementClusterName, groupKey, mwStatus, log)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	if corrected {
+		return reconcile.Result{RequeueAfter: requeueCorrected}, nil
 	}
 
 	// Write status conditions — only update if something changed.
@@ -633,6 +642,19 @@ const (
 	etcdBackendNotReported = "BackendNotReported"
 )
 
+// observeBackend registers the SpannerEtcd of a cluster that uses the socketcd
+// backend as a read-only target. Other clusters have nothing to observe.
+func (r *Reconciler) observeBackend(ctx context.Context, cluster *privatev1.Cluster, spanner bool, managementCluster, groupKey, safeName string) error {
+	if !spanner {
+		return nil
+	}
+	ref := spannerEtcdRef(cluster, safeName)
+	if err := r.transport.Observe(ctx, managementCluster, groupKey, []transport.ResourceRef{ref}); err != nil {
+		return fmt.Errorf("%s: observe spanner etcd: %w", adapterName, err)
+	}
+	return nil
+}
+
 // spannerEtcdRef returns the SpannerEtcd that socketcd creates next to a
 // HostedCluster, with the same namespace and name.
 func spannerEtcdRef(cluster *privatev1.Cluster, safeName string) transport.ResourceRef {
@@ -706,6 +728,59 @@ func (r *Reconciler) resourcesDispatched(ctx context.Context, cluster *privatev1
 		return false, fmt.Errorf("%s: check for dispatched resources: %w", adapterName, err)
 	}
 	return status != nil && (status.ApplyDesiresCount > 0 || status.TotalCount > 0), nil
+}
+
+// correctEtcdBackend aligns the recorded etcd backend with the live
+// HostedCluster, whose etcd management type HyperShift does not allow to change.
+// The record normally matches it by construction. It can differ when a Cluster
+// was recorded wrongly, for example one whose HostedCluster an earlier
+// controller applied in a way no status or desire revealed. Left alone, every
+// apply of such a Cluster would be rejected, so the record is corrected and the
+// next reconcile applies the type the HostedCluster really has.
+//
+// Only a readable, recognized type is acted on. Missing, empty or unrecognized
+// feedback says nothing about the HostedCluster and never changes the record.
+// Gecko only creates Unmanaged etcd for the socketcd backend, so Unmanaged is
+// read as Spanner. Returns true if the record was changed.
+func (r *Reconciler) correctEtcdBackend(ctx context.Context, cluster *privatev1.Cluster, managementCluster, groupKey string, mwStatus *transport.Status, log logger.Logger) (bool, error) {
+	if mwStatus == nil {
+		return false, nil
+	}
+	safeName := cluster.Spec.SafeName
+	if safeName == "" {
+		safeName = privatev1.DefaultSafeName(cluster.Name, cluster.UID)
+	}
+	hcKey := transport.ResourceKey(constants.HyperShiftGroup, constants.HyperShiftVersion, "hostedclusters",
+		fmt.Sprintf("clusters-%s", cluster.UID), safeName)
+
+	var want string
+	switch live := mwStatus.ResourceStatuses[hcKey]["etcdManagementType"]; live {
+	case "Managed":
+		want = constants.EtcdBackendManaged
+	case "Unmanaged":
+		want = constants.EtcdBackendSpanner
+	default:
+		return false, nil
+	}
+	recorded := cluster.Annotations[constants.AnnotationEtcdBackend]
+	if recorded == want {
+		return false, nil
+	}
+
+	log.Warnf(ctx, "%s: cluster %s is recorded with etcd backend %q but its HostedCluster uses %q etcd; correcting the record",
+		adapterName, cluster.Name, recorded, mwStatus.ResourceStatuses[hcKey]["etcdManagementType"])
+	// The SpannerEtcd target registered for a mistaken Spanner record is released
+	// first, so a failure here is retried instead of being forgotten.
+	if want == constants.EtcdBackendManaged {
+		if err := r.transport.ReleaseObserved(ctx, managementCluster, groupKey); err != nil {
+			return false, fmt.Errorf("%s: release observed resources: %w", adapterName, err)
+		}
+	}
+	cluster.Annotations[constants.AnnotationEtcdBackend] = want
+	if err := r.client.Update(ctx, cluster); err != nil {
+		return false, fmt.Errorf("%s: correct etcd backend: %w", adapterName, err)
+	}
+	return true, nil
 }
 
 // hostedClusterMayExist reports whether the Cluster's HostedCluster has been

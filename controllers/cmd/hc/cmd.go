@@ -83,7 +83,8 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&spannerEtcdEnabled, "spanner-etcd-enabled", false,
 		"Use socketcd's Spanner-backed Unmanaged etcd instead of Managed etcd for clusters the controller sees for the first time. "+
 			"HyperShift does not allow the etcd management type to change, so each cluster's backend is recorded when it is first reconciled "+
-			"and never changes: toggling this flag affects only clusters not yet recorded, and clusters whose HostedCluster already exists stay Managed")
+			"and is only corrected if it contradicts the etcd type of the live HostedCluster: toggling this flag affects only clusters not yet recorded, "+
+			"and clusters whose HostedCluster already exists stay Managed")
 
 	return cmd
 }

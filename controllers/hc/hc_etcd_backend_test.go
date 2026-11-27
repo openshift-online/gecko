@@ -2,8 +2,10 @@ package hc_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -19,7 +21,14 @@ import (
 
 func etcdType(t *testing.T, tr *mock.Client) string {
 	t.Helper()
-	obj := hostedClusterManifest(t, tr)
+	require.Len(t, tr.ApplyCalls, 1)
+	return appliedEtcdType(t, tr.ApplyCalls[0])
+}
+
+func appliedEtcdType(t *testing.T, call mock.ApplyCall) string {
+	t.Helper()
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal(call.Manifests[3], &obj))
 	return obj["spec"].(map[string]any)["etcd"].(map[string]any)["managementType"].(string)
 }
 
@@ -298,4 +307,130 @@ func TestReconcile_EtcdBackend_DispatchIsOnlyCheckedWhenItCanMatter(t *testing.T
 			require.Zero(t, tr.queries)
 		})
 	}
+}
+
+// liveTypeReconciler wires a reconciler whose HostedCluster feedback reports the
+// given live etcd management type, for a cluster with the given recorded backend.
+func liveTypeReconciler(t *testing.T, recorded string, hcFeedback map[string]string, stale bool) (*hc.Reconciler, *mockStoreClient, *mock.Client, *privatev1.Cluster) {
+	t.Helper()
+	cluster := buildReadyCluster("cluster-live", "4.15.0")
+	cluster.Annotations = map[string]string{constants.AnnotationEtcdBackend: recorded}
+	groupKey := mustClusterGroupKey("hyperfleet", cluster.Name)
+
+	tr := mock.New()
+	tr.StatusOverrides[spannerMCName+"/"+groupKey] = &transport.Status{
+		Conditions:       []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+		ResourceStatuses: map[string]map[string]string{hostedClusterResourceKey(cluster): hcFeedback},
+		Stale:            stale,
+	}
+	store := &mockStoreClient{cluster: cluster, statusWriter: &mockStatusWriter{}}
+	return hc.New(tr, testLogger(t), store, nil, "", "", hc.WithSpannerEtcd(true)), store, tr, cluster
+}
+
+func TestReconcile_EtcdBackend_RecordIsCorrectedFromTheLiveHostedCluster(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		recorded     string
+		live         string
+		want         string
+		wantReleased bool
+	}{
+		{"Spanner record of a Managed HostedCluster", constants.EtcdBackendSpanner, "Managed", constants.EtcdBackendManaged, true},
+		{"Managed record of an Unmanaged HostedCluster", constants.EtcdBackendManaged, "Unmanaged", constants.EtcdBackendSpanner, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, store, tr, cluster := liveTypeReconciler(t, tc.recorded,
+				map[string]string{"availableCondition": "False", "etcdManagementType": tc.live}, false)
+
+			result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+			require.NoError(t, err)
+			require.Equal(t, time.Second, result.RequeueAfter, "the corrected backend is applied by the next reconcile")
+
+			require.Equal(t, tc.want, recordedBackend(t, store))
+			require.False(t, store.statusWriter.called, "conditions are written once the record is right")
+			if tc.wantReleased {
+				require.Len(t, tr.ReleaseObservedCalls, 1, "the SpannerEtcd target of a mistaken record is released")
+			} else {
+				require.Empty(t, tr.ReleaseObservedCalls)
+			}
+		})
+	}
+}
+
+func TestReconcile_EtcdBackend_CorrectionConvergesWithoutLooping(t *testing.T) {
+	feedback := map[string]string{"availableCondition": "False", "etcdManagementType": "Managed"}
+	r, store, tr, cluster := liveTypeReconciler(t, constants.EtcdBackendSpanner, feedback, false)
+
+	_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.NoError(t, err)
+	require.Equal(t, constants.EtcdBackendManaged, recordedBackend(t, store))
+
+	store.cluster = store.updated.(*privatev1.Cluster)
+	store.updateCalled = false
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.NoError(t, err)
+	require.NotEqual(t, time.Second, result.RequeueAfter, "no correction means no immediate requeue")
+	require.False(t, store.updateCalled, "a record that matches the live type is left alone")
+	require.Len(t, tr.ApplyCalls, 2)
+	require.Equal(t, "Managed", appliedEtcdType(t, tr.ApplyCalls[1]), "the next reconcile applies the type the HostedCluster has")
+}
+
+func TestReconcile_EtcdBackend_MatchingLiveTypeChangesNothing(t *testing.T) {
+	for _, tc := range []struct{ recorded, live string }{
+		{constants.EtcdBackendSpanner, "Unmanaged"},
+		{constants.EtcdBackendManaged, "Managed"},
+	} {
+		t.Run(tc.recorded, func(t *testing.T) {
+			r, store, tr, cluster := liveTypeReconciler(t, tc.recorded,
+				map[string]string{"availableCondition": "True", "etcdManagementType": tc.live}, false)
+
+			result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+			require.NoError(t, err)
+			require.NotEqual(t, time.Second, result.RequeueAfter, "no correction means no immediate requeue")
+			require.False(t, store.updateCalled)
+			require.Empty(t, tr.ReleaseObservedCalls)
+			require.True(t, store.statusWriter.called)
+		})
+	}
+}
+
+func TestReconcile_EtcdBackend_UnreadableLiveTypeNeverChangesTheRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		feedback map[string]string
+		stale    bool
+	}{
+		{"no feedback", map[string]string{}, false},
+		{"feedback without the type", map[string]string{"availableCondition": "True"}, false},
+		{"unrecognized type", map[string]string{"availableCondition": "True", "etcdManagementType": "Other"}, false},
+		{"stale status", map[string]string{"availableCondition": "True", "etcdManagementType": "Managed"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, store, tr, cluster := liveTypeReconciler(t, constants.EtcdBackendSpanner, tc.feedback, tc.stale)
+
+			_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+			require.NoError(t, err)
+			require.False(t, store.updateCalled, "the record is only corrected from a recognized live type")
+			require.Empty(t, tr.ReleaseObservedCalls)
+		})
+	}
+}
+
+func TestReconcile_EtcdBackend_CorrectionFailuresAreRetried(t *testing.T) {
+	feedback := map[string]string{"availableCondition": "False", "etcdManagementType": "Managed"}
+
+	t.Run("record update fails", func(t *testing.T) {
+		r, store, _, cluster := liveTypeReconciler(t, constants.EtcdBackendSpanner, feedback, false)
+		store.updateErr = fmt.Errorf("conflict")
+		_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+		require.ErrorContains(t, err, "correct etcd backend")
+	})
+
+	t.Run("release fails before the record changes", func(t *testing.T) {
+		r, store, tr, cluster := liveTypeReconciler(t, constants.EtcdBackendSpanner, feedback, false)
+		tr.ReleaseObservedErr = fmt.Errorf("firestore unavailable")
+		_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+		require.ErrorContains(t, err, "release observed resources")
+		require.False(t, store.updateCalled, "the record is kept so the release is retried")
+	})
 }
