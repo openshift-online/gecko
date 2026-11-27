@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/openshift-online/gecko/controllers/client/transport"
 	"github.com/openshift-online/gecko/controllers/client/transport/mock"
 	"github.com/openshift-online/gecko/controllers/hc"
 	"github.com/openshift-online/gecko/controllers/util/constants"
@@ -191,4 +192,110 @@ func TestReconcile_EtcdBackend_DeletingClusterIsNotRecorded(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, store.updated.(*privatev1.Cluster).Annotations, constants.AnnotationEtcdBackend,
 		"deletion removes the finalizer without selecting a backend")
+}
+
+// dispatchTransport is a mock transport that records how often the dispatched
+// resources of a cluster are queried.
+type dispatchTransport struct {
+	*mock.Client
+	queries int
+	err     error
+}
+
+func (d *dispatchTransport) GetDeleteStatus(ctx context.Context, mc, groupKey string) (*transport.DeleteStatus, error) {
+	d.queries++
+	if d.err != nil {
+		return nil, d.err
+	}
+	return d.Client.GetDeleteStatus(ctx, mc, groupKey)
+}
+
+func dispatchReconciler(t *testing.T, cluster *privatev1.Cluster, flag bool, status *transport.DeleteStatus) (*hc.Reconciler, *mockStoreClient, *dispatchTransport) {
+	t.Helper()
+	tr := &dispatchTransport{Client: mock.New()}
+	if status != nil {
+		tr.DeleteStatusOverrides[spannerMCName+"/"+mustClusterGroupKey("hyperfleet", cluster.Name)] = status
+	}
+	store := &mockStoreClient{cluster: cluster, statusWriter: &mockStatusWriter{}}
+	return hc.New(tr, testLogger(t), store, nil, "", "", hc.WithSpannerEtcd(flag)), store, tr
+}
+
+func TestReconcile_EtcdBackend_DispatchedResourcesMakeAClusterLegacy(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status *transport.DeleteStatus
+	}{
+		{"apply desires exist", &transport.DeleteStatus{ApplyDesiresCount: 5}},
+		{"delete desires exist", &transport.DeleteStatus{TotalCount: 5, PendingCount: 5}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// An earlier controller dispatched the HostedCluster, but nothing is
+			// reflected in the Cluster's status yet.
+			cluster := buildReadyCluster("cluster-legacy", "4.15.0")
+			r, store, tr := dispatchReconciler(t, cluster, true, tc.status)
+
+			_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+			require.NoError(t, err)
+
+			require.Equal(t, constants.EtcdBackendManaged, recordedBackend(t, store))
+			require.Equal(t, 1, tr.queries)
+			require.Len(t, tr.ApplyCalls, 1)
+			require.Equal(t, "Managed", etcdType(t, tr.Client))
+			require.Empty(t, tr.ObserveCalls)
+		})
+	}
+}
+
+func TestReconcile_EtcdBackend_NothingDispatchedSelectsTheFlagBackend(t *testing.T) {
+	cluster := buildReadyCluster("cluster-new", "4.15.0")
+	r, store, tr := dispatchReconciler(t, cluster, true, &transport.DeleteStatus{AllSuccessful: true})
+
+	_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.NoError(t, err)
+
+	require.Equal(t, constants.EtcdBackendSpanner, recordedBackend(t, store))
+	require.Equal(t, 1, tr.queries)
+	require.Equal(t, "Unmanaged", etcdType(t, tr.Client))
+}
+
+func TestReconcile_EtcdBackend_DispatchCheckFailureIsNotGuessed(t *testing.T) {
+	cluster := buildReadyCluster("cluster-unsure", "4.15.0")
+	r, store, tr := dispatchReconciler(t, cluster, true, nil)
+	tr.err = fmt.Errorf("firestore unavailable")
+
+	_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.ErrorContains(t, err, "check for dispatched resources")
+	require.False(t, store.updateCalled, "no backend is recorded while it is unknown")
+	require.Empty(t, tr.ApplyCalls)
+}
+
+func TestReconcile_EtcdBackend_DispatchIsOnlyCheckedWhenItCanMatter(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		flag    bool
+		prepare func(*privatev1.Cluster)
+	}{
+		{"flag off always selects Managed", false, nil},
+		{"recorded backend is final", true, func(c *privatev1.Cluster) {
+			c.Annotations = map[string]string{constants.AnnotationEtcdBackend: constants.EtcdBackendSpanner}
+		}},
+		{"status already shows a HostedCluster", true, func(c *privatev1.Cluster) {
+			c.Status.HostedClusterResult = &privatev1.HostedClusterResult{Version: "4.15.0"}
+		}},
+		{"nothing can be dispatched before placement", true, func(c *privatev1.Cluster) {
+			c.Status.PlacementResult = nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := buildReadyCluster("cluster-backend", "4.15.0")
+			if tc.prepare != nil {
+				tc.prepare(cluster)
+			}
+			r, _, tr := dispatchReconciler(t, cluster, tc.flag, nil)
+
+			_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+			require.NoError(t, err)
+			require.Zero(t, tr.queries)
+		})
+	}
 }

@@ -651,7 +651,8 @@ func spannerEtcdRef(cluster *privatev1.Cluster, safeName string) transport.Resou
 // The selection is a one-time decision, written before anything is applied so a
 // later change of the flag, a retry, or a crash cannot select a different type
 // for the HostedCluster. A Cluster whose HostedCluster already exists predates
-// the setting and necessarily has Managed etcd.
+// the setting and necessarily has Managed etcd, which is recognized from its
+// status and, failing that, from the resources already dispatched for it.
 func (r *Reconciler) ensureEtcdBackend(ctx context.Context, cluster *privatev1.Cluster) (bool, error) {
 	switch backend := cluster.Annotations[constants.AnnotationEtcdBackend]; backend {
 	case constants.EtcdBackendSpanner:
@@ -663,7 +664,14 @@ func (r *Reconciler) ensureEtcdBackend(ctx context.Context, cluster *privatev1.C
 		return false, fmt.Errorf("%s: unknown etcd backend %q in annotation %s", adapterName, backend, constants.AnnotationEtcdBackend)
 	}
 
-	spanner := r.spannerEtcd && !hostedClusterMayExist(cluster)
+	spanner := false
+	if r.spannerEtcd && !hostedClusterMayExist(cluster) {
+		dispatched, err := r.resourcesDispatched(ctx, cluster)
+		if err != nil {
+			return false, err
+		}
+		spanner = !dispatched
+	}
 	backend := constants.EtcdBackendManaged
 	if spanner {
 		backend = constants.EtcdBackendSpanner
@@ -676,6 +684,28 @@ func (r *Reconciler) ensureEtcdBackend(ctx context.Context, cluster *privatev1.C
 		return false, fmt.Errorf("%s: record etcd backend: %w", adapterName, err)
 	}
 	return spanner, nil
+}
+
+// resourcesDispatched reports whether resources were already dispatched to the
+// Cluster's management cluster. An earlier controller may have applied the
+// HostedCluster without any of it being reflected in the Cluster's status yet,
+// so the transport is the authority. Nothing can have been dispatched before
+// placement. A failed query is an error rather than a guess, because guessing
+// wrong selects the wrong etcd type for a HostedCluster that cannot change it.
+func (r *Reconciler) resourcesDispatched(ctx context.Context, cluster *privatev1.Cluster) (bool, error) {
+	placement := cluster.Status.PlacementResult
+	if placement == nil || placement.ManagementClusterName == "" {
+		return false, nil
+	}
+	groupKey, err := transport.ClusterGroupKey(cluster.Namespace, cluster.Name)
+	if err != nil {
+		return false, fmt.Errorf("%s: build group key: %w", adapterName, err)
+	}
+	status, err := r.transport.GetDeleteStatus(ctx, placement.ManagementClusterName, groupKey)
+	if err != nil {
+		return false, fmt.Errorf("%s: check for dispatched resources: %w", adapterName, err)
+	}
+	return status != nil && (status.ApplyDesiresCount > 0 || status.TotalCount > 0), nil
 }
 
 // hostedClusterMayExist reports whether the Cluster's HostedCluster has been

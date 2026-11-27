@@ -373,9 +373,11 @@ func TestReconcile_SpannerEtcd_StaleStatusIsNotWritten(t *testing.T) {
 
 func TestReconcile_SpannerEtcd_NoStatusYetReportsBackendNotFound(t *testing.T) {
 	cluster := buildReadyCluster("cluster-spanner", "4.15.0")
-	// Apply returns a nil status to simulate resources that have no status yet.
+	// Apply returns a nil status to simulate resources that have no status yet,
+	// and nothing was dispatched before this reconcile.
 	store := &mockStoreClient{cluster: cluster, statusWriter: &mockStatusWriter{}}
-	r := hc.New(&errTransport{}, testLogger(t), store, nil, "", "", hc.WithSpannerEtcd(true))
+	tr := &errTransport{deleteStatus: &transport.DeleteStatus{AllSuccessful: true}}
+	r := hc.New(tr, testLogger(t), store, nil, "", "", hc.WithSpannerEtcd(true))
 
 	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
 	require.NoError(t, err)
