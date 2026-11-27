@@ -68,14 +68,14 @@ func hostedClusterName(cluster *privatev1.Cluster) string {
 //
 // The selection is a one-time decision, written before anything is applied so a
 // later change of the flag, a retry, or a crash cannot select a different type
-// for the HostedCluster. A Cluster whose HostedCluster already exists predates
-// the setting and necessarily has Managed etcd, which is recognized from its
-// status and, failing that, from the resources already dispatched for it.
+// for the HostedCluster. A Cluster whose HostedCluster may already exist has
+// Managed etcd, which is recognized from its status and, failing that, from the
+// resources already dispatched for it. Any other Cluster is selected as Spanner.
 //
 // With the flag off nothing is written: a Cluster without a record is Managed.
-// Turning the flag on later still cannot convert a Cluster seen in the
-// meantime, because by then its resources have been dispatched and it is
-// recorded as Managed like any other pre-existing Cluster.
+// A Cluster seen with the flag off stays unrecorded and is selected when the
+// flag is turned on: Managed if resources were dispatched for it in the
+// meantime, Spanner otherwise.
 func (r *Reconciler) ensureEtcdBackend(ctx context.Context, cluster *privatev1.Cluster) error {
 	switch backend := cluster.Annotations[constants.AnnotationEtcdBackend]; backend {
 	case constants.EtcdBackendSpanner, constants.EtcdBackendManaged:
@@ -188,8 +188,8 @@ func (r *Reconciler) correctEtcdBackend(ctx context.Context, cluster *privatev1.
 }
 
 // hostedClusterMayExist reports whether the Cluster's HostedCluster has been
-// applied or observed. Such a Cluster was created before it was possible to
-// select a backend.
+// applied or observed. Its HostedCluster may then already exist with Managed
+// etcd, so the Cluster must not be selected for the Spanner backend.
 func hostedClusterMayExist(cluster *privatev1.Cluster) bool {
 	return cluster.Status.HostedClusterResult != nil ||
 		meta.IsStatusConditionTrue(cluster.Status.Conditions, "ResourcesApplied")
@@ -240,8 +240,10 @@ func applyBackendCondition(cluster *privatev1.Cluster, backend *metav1.Condition
 }
 
 // backendBlocksAvailability reports whether the backend reported a failure.
-// Unknown does not block: it covers both a backend that has not reported yet
-// and one that is still provisioning, neither of which is a failure.
+// socketcd reports every stage that is not ready, provisioning included, as
+// False, so those block. Unknown only means the SpannerEtcd has not been read
+// yet, which says nothing about the backend and does not block: HostedCluster
+// availability already reflects an etcd that cannot serve.
 func backendBlocksAvailability(backend *metav1.Condition) bool {
 	return backend != nil && backend.Status == metav1.ConditionFalse
 }

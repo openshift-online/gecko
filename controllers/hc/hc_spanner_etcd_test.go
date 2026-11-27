@@ -166,15 +166,17 @@ func TestReconcile_SpannerEtcd_BackendStatus(t *testing.T) {
 			wantRequeue:      15 * time.Second,
 		},
 		{
-			name: "reported unknown is not a failure and does not gate availability",
+			// socketcd only reports True or False, so this guards the gate against an
+			// Unknown Ready rather than reproducing something it sends today.
+			name: "an Unknown Ready is not a failure and does not gate availability",
 			feedback: map[string]string{
 				"readyCondition":        "Unknown",
-				"readyConditionReason":  "Provisioning",
-				"readyConditionMessage": "Spanner instance is being created",
+				"readyConditionReason":  "NotEvaluated",
+				"readyConditionMessage": "Ready has not been evaluated",
 			},
 			wantBackend:      metav1.ConditionUnknown,
-			wantBackendWhy:   "Provisioning",
-			wantBackendMsg:   "Spanner instance is being created",
+			wantBackendWhy:   "NotEvaluated",
+			wantBackendMsg:   "Ready has not been evaluated",
 			wantAvailable:    metav1.ConditionTrue,
 			wantAvailableWhy: "HostedClusterAvailable",
 			wantRequeue:      5 * time.Minute,

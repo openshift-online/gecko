@@ -50,13 +50,10 @@ type Reconciler struct {
 type Option func(*Reconciler)
 
 // WithSpannerEtcd makes socketcd's Spanner-backed Unmanaged etcd the backend of
-// clusters that have no recorded backend and no HostedCluster yet. HyperShift
-// does not allow the etcd management type to change after creation, so the
-// choice is recorded in AnnotationEtcdBackend and a recorded choice never
-// changes with this setting; a cluster whose HostedCluster already exists is
-// recorded as Managed. With the setting off no backend is selected or recorded,
-// and a cluster without a record uses Managed etcd. A record is only ever
-// corrected to match the live HostedCluster.
+// clusters that are selected as new, see ensureEtcdBackend for the selection
+// rule. HyperShift does not allow the etcd management type to change after
+// creation, so a recorded choice never changes with this setting. With the
+// setting off no backend is selected or recorded.
 func WithSpannerEtcd(enabled bool) Option {
 	return func(r *Reconciler) { r.spannerEtcd = enabled }
 }
@@ -582,8 +579,8 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	// cluster as available. An explicitly reported backend failure also keeps the
 	// cluster from being reported as usable, with a fixed reason and message:
 	// HostedClusterAvailable is public, while socketcd's own text can carry
-	// internal details and stays on the private EtcdBackendReady. Unknown,
-	// including a backend that has not reported yet, does not block:
+	// internal details and stays on the private EtcdBackendReady. Unknown, which
+	// only means the SpannerEtcd has not been read yet, does not block:
 	// HostedCluster availability already reflects an etcd that cannot serve.
 	availableReason := "HostedClusterNotAvailable"
 	if availableStatus == "True" {
