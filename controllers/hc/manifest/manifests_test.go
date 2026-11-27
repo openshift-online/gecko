@@ -493,24 +493,30 @@ func TestBuild_SpannerEtcd_OptedIn(t *testing.T) {
 }
 
 func TestBuild_SpannerEtcd_NotOptedInIsUnchanged(t *testing.T) {
-	input := testInput()
-	optedOut := input
-	optedOut.SpannerEtcd = false
-
-	want, err := manifest.Build(input)
+	manifests, err := manifest.Build(testInput())
 	require.NoError(t, err)
-	got, err := manifest.Build(optedOut)
-	require.NoError(t, err)
-	require.Equal(t, want, got)
 
 	var obj map[string]any
-	require.NoError(t, json.Unmarshal(got[3], &obj))
-	annotations := obj["metadata"].(map[string]any)["annotations"].(map[string]any)
-	require.NotContains(t, annotations, "gcp.managed.openshift.io/spanner-enabled")
+	require.NoError(t, json.Unmarshal(manifests[3], &obj))
 
-	etcd := obj["spec"].(map[string]any)["etcd"].(map[string]any)
-	require.Equal(t, "Managed", etcd["managementType"])
-	require.NotContains(t, etcd, "unmanaged")
+	// The exact pre-socketcd output: no socketcd annotation, and the Managed
+	// etcd with its persistent volume storage.
+	require.Equal(t, map[string]any{
+		"gcp.managed.openshift.io/generation":                           "3",
+		"hypershift.openshift.io/pod-security-admission-label-override": "baseline",
+		"hypershift.openshift.io/skip-kas-conflict-san-validation":      "true",
+		"hypershift.openshift.io/cleanup-cloud-resources":               "true",
+	}, obj["metadata"].(map[string]any)["annotations"])
+
+	require.Equal(t, map[string]any{
+		"managementType": "Managed",
+		"managed": map[string]any{
+			"storage": map[string]any{
+				"type":             "PersistentVolume",
+				"persistentVolume": map[string]any{"storageClassName": "premium-rwo"},
+			},
+		},
+	}, obj["spec"].(map[string]any)["etcd"])
 }
 
 func TestBuild_SpannerEtcd_OnlyChangesHostedCluster(t *testing.T) {
