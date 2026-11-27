@@ -351,7 +351,7 @@ func (c *Client) Delete(ctx context.Context, targetCluster, groupKey string) err
 
 	if len(applySnaps) == 0 {
 		c.log.Infof(ctx, "firestore transport: Delete %s/%s: no apply desires found, nothing to delete", targetCluster, groupKey)
-		return c.releaseObserved(ctx, mc, targetCluster, groupKey)
+		return nil
 	}
 
 	// Process in chunks to stay within Firestore's 500-write-per-transaction
@@ -403,10 +403,6 @@ func (c *Client) Delete(ctx context.Context, targetCluster, groupKey string) err
 		return fmt.Errorf("firestore transport: Delete %s/%s: %d chunk(s) failed: %w", targetCluster, groupKey, len(errs), errors.Join(errs...))
 	}
 
-	if err := c.releaseObserved(ctx, mc, targetCluster, groupKey); err != nil {
-		return err
-	}
-
 	c.log.Infof(ctx, "firestore transport: deleted %d resources for %s/%s", len(applySnaps), targetCluster, groupKey)
 	return nil
 }
@@ -419,10 +415,7 @@ func (c *Client) ReleaseObserved(ctx context.Context, targetCluster, groupKey st
 	if err != nil {
 		return err
 	}
-	return c.releaseObserved(ctx, mc, targetCluster, groupKey)
-}
 
-func (c *Client) releaseObserved(ctx context.Context, mc *mcClients, targetCluster, groupKey string) error {
 	readSnaps, err := mc.specs.Collection(collectionReadDesires).
 		Where("spec.groupKey", "==", groupKey).
 		Documents(ctx).GetAll()

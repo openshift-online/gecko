@@ -1579,7 +1579,7 @@ func TestIntegration_GetStatus_AppliedResourcesStillStaleWithObservedTarget(t *t
 	assert.True(t, st.Stale, "unprocessed applied resources keep the group stale")
 }
 
-func TestIntegration_Delete_ReleasesObservedTargets(t *testing.T) {
+func TestIntegration_Delete_LeavesObservedTargetsForRelease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	c := newTestClient(t)
@@ -1605,7 +1605,10 @@ func TestIntegration_Delete_ReleasesObservedTargets(t *testing.T) {
 
 	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
 	require.NoError(t, err)
-	assert.Empty(t, readSnaps, "observed targets are released with the cluster")
+	require.Len(t, readSnaps, 1, "only the observed target is left once the applied resources are deleted")
+	var rd kubeapplier.ReadDesire
+	require.NoError(t, readSnaps[0].DataTo(&rd))
+	assert.Equal(t, "spanneretcds", rd.Spec.TargetItem.Resource)
 
 	deleteSnaps, err := specsClient.Collection("deletedesires").Documents(ctx).GetAll()
 	require.NoError(t, err)
@@ -1614,31 +1617,17 @@ func TestIntegration_Delete_ReleasesObservedTargets(t *testing.T) {
 	require.NoError(t, deleteSnaps[0].DataTo(&dd))
 	assert.Equal(t, "hostedclusters", dd.Spec.TargetItem.Resource)
 
+	require.NoError(t, c.ReleaseObserved(ctx, testMCName, testGroupKey))
+	readSnaps, err = specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, readSnaps, "ReleaseObserved removes what Delete left")
+
 	otherReads, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", otherGroupKey).Documents(ctx).GetAll()
 	require.NoError(t, err)
 	assert.Len(t, otherReads, 2, "other clusters keep their applied and observed read desires")
 	otherApplies, err := specsClient.Collection("applydesires").Where("spec.groupKey", "==", otherGroupKey).Documents(ctx).GetAll()
 	require.NoError(t, err)
 	assert.Len(t, otherApplies, 1, "other clusters keep their applied resources")
-}
-
-func TestIntegration_Delete_ReleasesObservedTargetsWithoutApplyDesires(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	c := newTestClient(t)
-	opts := emulatorOpts(t)
-
-	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
-	require.NoError(t, err)
-	closeFirestoreClient(t, specsClient)
-	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
-
-	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
-	require.NoError(t, c.Delete(ctx, testMCName, testGroupKey))
-
-	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
-	require.NoError(t, err)
-	assert.Empty(t, readSnaps)
 }
 
 func TestIntegration_ReleaseObserved_LeavesAppliedResourcesAlone(t *testing.T) {

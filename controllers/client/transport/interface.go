@@ -86,8 +86,8 @@ type Client interface {
 	// Observe registers read-only targets for the given groupKey: objects that
 	// another component owns and creates, whose status is reported in
 	// ResourceStatuses but which are never applied or deleted by Gecko.
-	// Registration is idempotent and the targets are released by
-	// ReleaseObserved, and by Delete once its resources are gone.
+	// Registration is idempotent. Delete leaves the targets alone; they are
+	// released by ReleaseObserved.
 	Observe(ctx context.Context, targetCluster, groupKey string, refs []ResourceRef) error
 	// GetStatus compares the expected Desire documents in the specs database
 	// with the statuses currently available for the given groupKey.
@@ -97,8 +97,8 @@ type Client interface {
 	// so it is safe to call at any point of a deletion, including when nothing was
 	// ever applied. It is idempotent.
 	ReleaseObserved(ctx context.Context, targetCluster, groupKey string) error
-	// Delete removes all resources for the given groupKey from the target cluster
-	// and releases its read-only targets.
+	// Delete removes all resources for the given groupKey from the target cluster.
+	// Read-only targets registered by Observe are not touched, see ReleaseObserved.
 	Delete(ctx context.Context, targetCluster, groupKey string) error
 	// GetDeleteStatus checks the status of delete operations for the given groupKey.
 	GetDeleteStatus(ctx context.Context, targetCluster, groupKey string) (*DeleteStatus, error)
