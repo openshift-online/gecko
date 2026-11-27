@@ -1442,3 +1442,311 @@ func TestIntegration_GetStatus_UsesSpecUpdateTimeForStaleness(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, status.Stale, "status observing the current spec should not be stale")
 }
+
+var spannerEtcdRef = transport.ResourceRef{
+	Group:     "etcd.gcp.managed.openshift.io",
+	Version:   "v1alpha1",
+	Resource:  "spanneretcds",
+	Namespace: "clusters-cluster-abc",
+	Name:      "my-hc",
+}
+
+func TestIntegration_Observe_WritesReadDesireOnly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}), "Observe is idempotent")
+
+	applySnaps, err := specsClient.Collection("applydesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, applySnaps, "observed objects must never be applied")
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, readSnaps, 1)
+	var rd kubeapplier.ReadDesire
+	require.NoError(t, readSnaps[0].DataTo(&rd))
+	assert.Equal(t, "spanneretcds", rd.Spec.TargetItem.Resource)
+	assert.Equal(t, "my-hc", rd.Spec.TargetItem.Name)
+}
+
+// writeCurrentStatus writes up-to-date apply and read status documents for the
+// applied resources of the group, as kube-applier-gcp would. Observed-only read
+// targets get no status document.
+func writeCurrentStatus(ctx context.Context, t *testing.T, specs, status *firestore.Client, groupKey string) {
+	t.Helper()
+	applySnaps, err := specs.Collection("applydesires").Where("spec.groupKey", "==", groupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	for _, snap := range applySnaps {
+		var ad kubeapplier.ApplyDesire
+		require.NoError(t, snap.DataTo(&ad))
+		ad.Status = kubeapplier.ApplyDesireStatus{
+			ObservedDesireUpdateTime: snap.UpdateTime,
+			Conditions:               []metav1.Condition{{Type: "Successful", Status: metav1.ConditionTrue, Reason: "NoErrors"}},
+		}
+		_, err := status.Collection("applydesires").Doc(snap.Ref.ID).Set(ctx, ad)
+		require.NoError(t, err)
+
+		readSnap, err := specs.Collection("readdesires").Doc(snap.Ref.ID).Get(ctx)
+		require.NoError(t, err)
+		var rd kubeapplier.ReadDesire
+		require.NoError(t, readSnap.DataTo(&rd))
+		rd.Status = kubeapplier.ReadDesireStatus{ObservedDesireUpdateTime: readSnap.UpdateTime}
+		_, err = status.Collection("readdesires").Doc(snap.Ref.ID).Set(ctx, rd)
+		require.NoError(t, err)
+	}
+}
+
+func TestIntegration_GetStatus_ObservedOnlyTargetIsNotStale(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	statusClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "status", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, statusClient)
+	cleanupCollections(t, []*firestore.Client{specsClient, statusClient}, "applydesires", "readdesires", "deletedesires")
+
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+
+	st, err := c.GetStatus(ctx, testMCName, testGroupKey)
+	require.NoError(t, err)
+	assert.False(t, st.Stale, "an observed target that never reports must not stale the group")
+	require.Contains(t, st.ResourceStatuses, spannerEtcdRef.Key())
+	assert.Empty(t, st.ResourceStatuses[spannerEtcdRef.Key()])
+}
+
+func TestIntegration_GetStatus_ObservedTargetWithoutStatusDoesNotStaleAppliedResources(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	statusClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "status", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, statusClient)
+	cleanupCollections(t, []*firestore.Client{specsClient, statusClient}, "applydesires", "readdesires", "deletedesires")
+
+	_, err = c.Apply(ctx, testMCName, testGroupKey, [][]byte{hcManifest(t, testClusterID, "my-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	writeCurrentStatus(ctx, t, specsClient, statusClient, testGroupKey)
+
+	st, err := c.GetStatus(ctx, testMCName, testGroupKey)
+	require.NoError(t, err)
+	assert.False(t, st.Stale, "the applied resources are current, and the observed target must not change that")
+	require.Len(t, st.Conditions, 1)
+	assert.Equal(t, metav1.ConditionTrue, st.Conditions[0].Status)
+	assert.Contains(t, st.ResourceStatuses, "hypershift.openshift.io/v1beta1/hostedclusters/clusters-cluster-abc/my-hc")
+	assert.Contains(t, st.ResourceStatuses, spannerEtcdRef.Key())
+}
+
+func TestIntegration_GetStatus_AppliedResourcesStillStaleWithObservedTarget(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	statusClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "status", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, statusClient)
+	cleanupCollections(t, []*firestore.Client{specsClient, statusClient}, "applydesires", "readdesires", "deletedesires")
+
+	_, err = c.Apply(ctx, testMCName, testGroupKey, [][]byte{hcManifest(t, testClusterID, "my-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+
+	st, err := c.GetStatus(ctx, testMCName, testGroupKey)
+	require.NoError(t, err)
+	assert.True(t, st.Stale, "unprocessed applied resources keep the group stale")
+}
+
+func TestIntegration_Delete_LeavesObservedTargetsForRelease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	otherGroupKey := "projects/test-ns/clusters/other"
+	otherRef := spannerEtcdRef
+	otherRef.Namespace = "clusters-other"
+
+	_, err = c.Apply(ctx, testMCName, testGroupKey, [][]byte{hcManifest(t, testClusterID, "my-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	_, err = c.Apply(ctx, testMCName, otherGroupKey, [][]byte{hcManifest(t, "other", "other-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, otherGroupKey, []transport.ResourceRef{otherRef}))
+
+	require.NoError(t, c.Delete(ctx, testMCName, testGroupKey))
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, readSnaps, 1, "only the observed target is left once the applied resources are deleted")
+	var rd kubeapplier.ReadDesire
+	require.NoError(t, readSnaps[0].DataTo(&rd))
+	assert.Equal(t, "spanneretcds", rd.Spec.TargetItem.Resource)
+
+	deleteSnaps, err := specsClient.Collection("deletedesires").Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, deleteSnaps, 1, "only the applied HostedCluster is deleted, never the observed object")
+	var dd kubeapplier.DeleteDesire
+	require.NoError(t, deleteSnaps[0].DataTo(&dd))
+	assert.Equal(t, "hostedclusters", dd.Spec.TargetItem.Resource)
+
+	require.NoError(t, c.ReleaseObserved(ctx, testMCName, testGroupKey))
+	readSnaps, err = specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, readSnaps, "ReleaseObserved removes what Delete left")
+
+	otherReads, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", otherGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Len(t, otherReads, 2, "other clusters keep their applied and observed read desires")
+	otherApplies, err := specsClient.Collection("applydesires").Where("spec.groupKey", "==", otherGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Len(t, otherApplies, 1, "other clusters keep their applied resources")
+}
+
+func TestIntegration_ReleaseObserved_LeavesAppliedResourcesAlone(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	_, err = c.Apply(ctx, testMCName, testGroupKey, [][]byte{hcManifest(t, testClusterID, "my-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+
+	require.NoError(t, c.ReleaseObserved(ctx, testMCName, testGroupKey))
+	require.NoError(t, c.ReleaseObserved(ctx, testMCName, testGroupKey), "ReleaseObserved is idempotent")
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	require.Len(t, readSnaps, 1, "only the observed target is released")
+	var rd kubeapplier.ReadDesire
+	require.NoError(t, readSnaps[0].DataTo(&rd))
+	assert.Equal(t, "hostedclusters", rd.Spec.TargetItem.Resource, "the applied HostedCluster keeps reporting status")
+
+	applySnaps, err := specsClient.Collection("applydesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Len(t, applySnaps, 1)
+	deleteSnaps, err := specsClient.Collection("deletedesires").Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, deleteSnaps, "releasing observed targets never starts a deletion")
+}
+
+func TestIntegration_ReleaseObserved_WithoutAnyApplyDesires(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	cleanupCollections(t, []*firestore.Client{specsClient}, "applydesires", "readdesires", "deletedesires")
+
+	otherGroupKey := "projects/test-ns/clusters/other"
+	otherRef := spannerEtcdRef
+	otherRef.Namespace = "clusters-other"
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	require.NoError(t, c.Observe(ctx, testMCName, otherGroupKey, []transport.ResourceRef{otherRef}))
+
+	require.NoError(t, c.ReleaseObserved(ctx, testMCName, testGroupKey))
+
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Empty(t, readSnaps)
+	otherSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", otherGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	assert.Len(t, otherSnaps, 1, "other clusters are untouched")
+}
+
+func TestIntegration_GetStatus_OutdatedObservedStatusIsDecodedWithoutStaling(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	statusClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "status", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, statusClient)
+	cleanupCollections(t, []*firestore.Client{specsClient, statusClient}, "applydesires", "readdesires", "deletedesires")
+
+	_, err = c.Apply(ctx, testMCName, testGroupKey, [][]byte{hcManifest(t, testClusterID, "my-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	writeCurrentStatus(ctx, t, specsClient, statusClient, testGroupKey)
+
+	// kube-applier reported on the SpannerEtcd, but before the ReadDesire was last
+	// written, as happens when it is observed again after being released.
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	var observed *kubeapplier.ReadDesire
+	var observedID string
+	for _, snap := range readSnaps {
+		var rd kubeapplier.ReadDesire
+		require.NoError(t, snap.DataTo(&rd))
+		if rd.Spec.TargetItem.Resource == spannerEtcdRef.Resource {
+			observed, observedID = &rd, snap.Ref.ID
+		}
+	}
+	require.NotNil(t, observed)
+	_, err = statusClient.Collection("readdesires").Doc(observedID).Set(ctx, map[string]any{
+		"spec":   observed.Spec,
+		"status": kubeapplier.ReadDesireStatus{ObservedDesireUpdateTime: time.Unix(1, 0)},
+		"status_kubeContent": map[string]any{
+			"status": map[string]any{
+				"conditions": []any{
+					map[string]any{"type": "BackendReady", "status": "False"},
+					map[string]any{
+						"type": "Ready", "status": "False",
+						"reason":  "WaitingForBackend",
+						"message": "BackendReady: Spanner instance not ready",
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	st, err := c.GetStatus(ctx, testMCName, testGroupKey)
+	require.NoError(t, err)
+	assert.False(t, st.Stale, "an outdated status of an observed target must not stale the applied resources")
+	assert.Equal(t, map[string]string{
+		"readyCondition":        "False",
+		"readyConditionReason":  "WaitingForBackend",
+		"readyConditionMessage": "BackendReady: Spanner instance not ready",
+	}, st.ResourceStatuses[spannerEtcdRef.Key()])
+}

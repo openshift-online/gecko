@@ -14,6 +14,19 @@ type ApplyCall struct {
 	Manifests     [][]byte
 }
 
+// ObserveCall records arguments from an Observe call.
+type ObserveCall struct {
+	TargetCluster string
+	GroupKey      string
+	Refs          []transport.ResourceRef
+}
+
+// ReleaseObservedCall records arguments from a ReleaseObserved call.
+type ReleaseObservedCall struct {
+	TargetCluster string
+	GroupKey      string
+}
+
 // DeleteCall records arguments from a Delete call.
 type DeleteCall struct {
 	TargetCluster string
@@ -40,6 +53,18 @@ type Client struct {
 
 	// ApplyCalls records all Apply invocations for test assertions.
 	ApplyCalls []ApplyCall
+
+	// ObserveCalls records all Observe invocations for test assertions.
+	ObserveCalls []ObserveCall
+
+	// ObserveErr, if non-nil, is returned by Observe.
+	ObserveErr error
+
+	// ReleaseObservedCalls records all ReleaseObserved invocations.
+	ReleaseObservedCalls []ReleaseObservedCall
+
+	// ReleaseObservedErr, if non-nil, is returned by ReleaseObserved.
+	ReleaseObservedErr error
 
 	// DeleteCalls records all Delete invocations for test assertions.
 	DeleteCalls []DeleteCall
@@ -85,6 +110,31 @@ func (c *Client) Apply(ctx context.Context, targetCluster, groupKey string, mani
 		return override, nil
 	}
 	return &transport.Status{}, nil
+}
+
+// Observe records the call and returns any configured error.
+func (c *Client) Observe(ctx context.Context, targetCluster, groupKey string, refs []transport.ResourceRef) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.ObserveCalls = append(c.ObserveCalls, ObserveCall{
+		TargetCluster: targetCluster,
+		GroupKey:      groupKey,
+		Refs:          refs,
+	})
+	return c.ObserveErr
+}
+
+// ReleaseObserved records the call and returns any configured error.
+func (c *Client) ReleaseObserved(ctx context.Context, targetCluster, groupKey string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.ReleaseObservedCalls = append(c.ReleaseObservedCalls, ReleaseObservedCall{
+		TargetCluster: targetCluster,
+		GroupKey:      groupKey,
+	})
+	return c.ReleaseObservedErr
 }
 
 // GetStatus returns any configured status override, or an empty status.
@@ -144,6 +194,10 @@ func (c *Client) Reset() {
 	c.StatusOverrides = make(map[string]*transport.Status)
 	c.DeleteStatusOverrides = make(map[string]*transport.DeleteStatus)
 	c.ApplyCalls = nil
+	c.ObserveCalls = nil
+	c.ObserveErr = nil
+	c.ReleaseObservedCalls = nil
+	c.ReleaseObservedErr = nil
 	c.DeleteCalls = nil
 	c.CleanupDeleteDesiresCalls = nil
 	c.DeleteErr = nil

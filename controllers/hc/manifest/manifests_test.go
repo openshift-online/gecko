@@ -468,3 +468,71 @@ func TestBuild_EtcdSpec(t *testing.T) {
 	pv := storage["persistentVolume"].(map[string]any)
 	require.Equal(t, "premium-rwo", pv["storageClassName"])
 }
+
+func TestBuild_SpannerEtcd_OptedIn(t *testing.T) {
+	input := testInput()
+	input.SpannerEtcd = true
+
+	manifests, err := manifest.Build(input)
+	require.NoError(t, err)
+
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal(manifests[3], &obj))
+
+	annotations := obj["metadata"].(map[string]any)["annotations"].(map[string]any)
+	require.Equal(t, "true", annotations["gcp.managed.openshift.io/spanner-enabled"])
+
+	etcd := obj["spec"].(map[string]any)["etcd"].(map[string]any)
+	require.Equal(t, "Unmanaged", etcd["managementType"])
+	require.NotContains(t, etcd, "managed", "Unmanaged etcd must not carry the Managed storage configuration")
+
+	unmanaged := etcd["unmanaged"].(map[string]any)
+	require.Equal(t, "https://spanner-etcd:2379", unmanaged["endpoint"])
+	clientSecret := unmanaged["tls"].(map[string]any)["clientSecret"].(map[string]any)
+	require.Equal(t, "my-cluster-safe-spanner-etcd-client", clientSecret["name"])
+}
+
+func TestBuild_SpannerEtcd_NotOptedInIsUnchanged(t *testing.T) {
+	manifests, err := manifest.Build(testInput())
+	require.NoError(t, err)
+
+	var obj map[string]any
+	require.NoError(t, json.Unmarshal(manifests[3], &obj))
+
+	// The exact pre-socketcd output: no socketcd annotation, and the Managed
+	// etcd with its persistent volume storage.
+	require.Equal(t, map[string]any{
+		"gcp.managed.openshift.io/generation":                           "3",
+		"hypershift.openshift.io/pod-security-admission-label-override": "baseline",
+		"hypershift.openshift.io/skip-kas-conflict-san-validation":      "true",
+		"hypershift.openshift.io/cleanup-cloud-resources":               "true",
+	}, obj["metadata"].(map[string]any)["annotations"])
+
+	require.Equal(t, map[string]any{
+		"managementType": "Managed",
+		"managed": map[string]any{
+			"storage": map[string]any{
+				"type":             "PersistentVolume",
+				"persistentVolume": map[string]any{"storageClassName": "premium-rwo"},
+			},
+		},
+	}, obj["spec"].(map[string]any)["etcd"])
+}
+
+func TestBuild_SpannerEtcd_OnlyChangesHostedCluster(t *testing.T) {
+	input := testInput()
+	managed, err := manifest.Build(input)
+	require.NoError(t, err)
+	input.SpannerEtcd = true
+	spanner, err := manifest.Build(input)
+	require.NoError(t, err)
+
+	require.Len(t, spanner, len(managed))
+	for i := range managed {
+		if i == 3 {
+			require.NotEqual(t, managed[i], spanner[i], "the HostedCluster carries the etcd contract")
+			continue
+		}
+		require.Equal(t, managed[i], spanner[i], "manifest %d is independent of the etcd backend", i)
+	}
+}

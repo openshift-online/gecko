@@ -13,6 +13,20 @@ func ResourceKey(group, version, resource, namespace, name string) string {
 	return fmt.Sprintf("%s/%s/%s/%s/%s", group, version, resource, namespace, name)
 }
 
+// ResourceRef identifies a Kubernetes object on a management cluster.
+type ResourceRef struct {
+	Group     string
+	Version   string
+	Resource  string
+	Namespace string
+	Name      string
+}
+
+// Key returns the identity key used in ResourceStatuses for the object.
+func (r ResourceRef) Key() string {
+	return ResourceKey(r.Group, r.Version, r.Resource, r.Namespace, r.Name)
+}
+
 // Status holds the status read back from the transport after applying resources.
 type Status struct {
 	// Conditions contains top-level conditions (Applied, Available, etc.).
@@ -22,7 +36,9 @@ type Status struct {
 	ResourceStatuses map[string]map[string]string
 	// Stale is true when an expected status document is missing or does not yet
 	// reflect the most recently written spec. Callers should requeue sooner and
-	// avoid trusting condition values until Stale becomes false.
+	// avoid trusting condition values until Stale becomes false. Read-only
+	// targets registered by Observe are excluded: their status may never arrive,
+	// and is simply empty in ResourceStatuses until it does.
 	Stale bool
 }
 
@@ -67,10 +83,22 @@ type DeleteFailure struct {
 type Client interface {
 	// Apply creates or updates resources on the target cluster and returns current status.
 	Apply(ctx context.Context, targetCluster, groupKey string, manifests [][]byte) (*Status, error)
+	// Observe registers read-only targets for the given groupKey: objects that
+	// another component owns and creates, whose status is reported in
+	// ResourceStatuses but which are never applied or deleted by Gecko.
+	// Registration is idempotent. Delete leaves the targets alone; they are
+	// released by ReleaseObserved.
+	Observe(ctx context.Context, targetCluster, groupKey string, refs []ResourceRef) error
 	// GetStatus compares the expected Desire documents in the specs database
 	// with the statuses currently available for the given groupKey.
 	GetStatus(ctx context.Context, targetCluster, groupKey string) (*Status, error)
+	// ReleaseObserved removes the read-only targets registered by Observe for the
+	// given groupKey. Targets of resources that are still applied are left alone,
+	// so it is safe to call at any point of a deletion, including when nothing was
+	// ever applied. It is idempotent.
+	ReleaseObserved(ctx context.Context, targetCluster, groupKey string) error
 	// Delete removes all resources for the given groupKey from the target cluster.
+	// Read-only targets registered by Observe are not touched, see ReleaseObserved.
 	Delete(ctx context.Context, targetCluster, groupKey string) error
 	// GetDeleteStatus checks the status of delete operations for the given groupKey.
 	GetDeleteStatus(ctx context.Context, targetCluster, groupKey string) (*DeleteStatus, error)

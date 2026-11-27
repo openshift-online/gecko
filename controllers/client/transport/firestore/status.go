@@ -82,9 +82,12 @@ func aggregateConditions(desires []kubeapplier.ApplyDesire) []metav1.Condition {
 // extractResourceStatuses parses ReadDesire status documents and returns
 // per-resource status fields keyed by resource identity string.
 // For HostedCluster resources it extracts: availableCondition, controlPlaneEndpoint,
-// version, desiredVersion, availableVersions, and versionConditions.
+// version, desiredVersion, availableVersions, versionConditions,
+// etcdManagementType, and spannerEnabled.
 // For NodePool resources it extracts: readyCondition, allNodesHealthyCondition.
 // For Certificate resources it extracts: readyCondition.
+// For SpannerEtcd resources it extracts: readyCondition, readyConditionReason,
+// readyConditionMessage.
 // Other resources: empty inner map (no known fields to extract).
 func extractResourceStatuses(reads []kubeapplier.ReadDesire) (map[string]map[string]string, error) {
 	result := make(map[string]map[string]string, len(reads))
@@ -106,6 +109,8 @@ func extractResourceStatuses(reads []kubeapplier.ReadDesire) (map[string]map[str
 			fields, err = extractNPFields(rd.Status.KubeContent.Raw)
 		case ref.Resource == "certificates" && ref.Group == "cert-manager.io":
 			fields, err = extractCertFields(rd.Status.KubeContent.Raw)
+		case ref.Resource == constants.SocketCDResource && ref.Group == constants.SocketCDGroup:
+			fields, err = extractSpannerEtcdFields(rd.Status.KubeContent.Raw)
 		}
 		if err != nil {
 			return nil, fmt.Errorf("extract resource status %s: %w", key, err)
@@ -124,10 +129,22 @@ func extractResourceStatuses(reads []kubeapplier.ReadDesire) (map[string]map[str
 //   - availableVersions: JSON-encoded .status.version.availableUpdates[].version
 //   - versionConditions: JSON-encoded HostedCluster conditions consumed by Gecko
 //     (upgrade readiness and ingress readiness)
+//   - etcdManagementType: .spec.etcd.managementType, which HyperShift does not
+//     allow to change after creation. Omitted when the live object has none.
+//   - spannerEnabled: "true" when the HostedCluster carries the socketcd opt-in
+//     annotation, which tells a socketcd-backed Unmanaged etcd from any other.
 func extractHCFields(raw []byte) (map[string]string, error) {
 	fields := map[string]string{}
 
 	var obj struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+		Spec struct {
+			Etcd struct {
+				ManagementType string `json:"managementType"`
+			} `json:"etcd"`
+		} `json:"spec"`
 		Status struct {
 			Conditions           []metav1.Condition `json:"conditions"`
 			ControlPlaneEndpoint struct {
@@ -156,6 +173,14 @@ func extractHCFields(raw []byte) (map[string]string, error) {
 			fields["availableCondition"] = string(c.Status)
 			break
 		}
+	}
+
+	if managementType := obj.Spec.Etcd.ManagementType; managementType != "" {
+		fields["etcdManagementType"] = managementType
+	}
+
+	if obj.Metadata.Annotations[constants.AnnotationSpannerEnabled] == "true" {
+		fields["spannerEnabled"] = "true"
 	}
 
 	if host := obj.Status.ControlPlaneEndpoint.Host; host != "" {
@@ -282,6 +307,46 @@ func extractCertFields(raw []byte) (map[string]string, error) {
 			fields["readyCondition"] = c.Status
 			break
 		}
+	}
+
+	return fields, nil
+}
+
+// extractSpannerEtcdFields extracts SpannerEtcd status fields from raw live-object JSON.
+// socketcd summarizes its stages in the Ready condition, whose reason and
+// message name the first stage that is not ready.
+//   - readyCondition:        .status.conditions[type=Ready].status
+//   - readyConditionReason:  .status.conditions[type=Ready].reason
+//   - readyConditionMessage: .status.conditions[type=Ready].message
+func extractSpannerEtcdFields(raw []byte) (map[string]string, error) {
+	fields := map[string]string{}
+
+	var obj struct {
+		Status struct {
+			Conditions []struct {
+				Type    string `json:"type"`
+				Status  string `json:"status"`
+				Reason  string `json:"reason"`
+				Message string `json:"message"`
+			} `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("unmarshal SpannerEtcd live object: %w", err)
+	}
+
+	for _, c := range obj.Status.Conditions {
+		if c.Type != "Ready" {
+			continue
+		}
+		fields["readyCondition"] = c.Status
+		if c.Reason != "" {
+			fields["readyConditionReason"] = c.Reason
+		}
+		if c.Message != "" {
+			fields["readyConditionMessage"] = c.Message
+		}
+		break
 	}
 
 	return fields, nil

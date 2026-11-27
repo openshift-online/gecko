@@ -177,8 +177,43 @@ func (c *Client) Apply(ctx context.Context, targetCluster, groupKey string, mani
 	return c.GetStatus(ctx, targetCluster, groupKey)
 }
 
+// Observe writes one ReadDesire document per ref to the specs DB without a
+// matching ApplyDesire, so the object's status is returned by GetStatus while
+// the object stays owned by another component.
+func (c *Client) Observe(ctx context.Context, targetCluster, groupKey string, refs []transport.ResourceRef) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	mc, err := c.clients(ctx, targetCluster)
+	if err != nil {
+		return err
+	}
+
+	batch := mc.specs.BulkWriter(ctx)
+	jobs := make([]*firestore.BulkWriterJob, 0, len(refs))
+	for _, r := range refs {
+		ref := kubeapplier.ResourceReference{
+			Group: r.Group, Version: r.Version, Resource: r.Resource, Namespace: r.Namespace, Name: r.Name,
+		}
+		readID, readData := buildReadDesireDoc(groupKey, targetCluster, ref)
+		job, err := batch.Set(mc.specs.Collection(collectionReadDesires).Doc(readID), readData)
+		if err != nil {
+			return fmt.Errorf("firestore transport: Observe %s/%s set read desire: %w", targetCluster, groupKey, err)
+		}
+		jobs = append(jobs, job)
+	}
+	batch.Flush()
+	for _, job := range jobs {
+		if _, err := job.Results(); err != nil {
+			return fmt.Errorf("firestore transport: Observe %s/%s write error: %w", targetCluster, groupKey, err)
+		}
+	}
+	return nil
+}
+
 // GetStatus compares expected Desire documents with the ApplyDesire and
-// ReadDesire statuses currently available for the given groupKey.
+// ReadDesire statuses currently available for the given groupKey. Read targets
+// registered by Observe do not contribute to Stale.
 func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) (*transport.Status, error) {
 	mc, err := c.clients(ctx, targetCluster)
 	if err != nil {
@@ -214,6 +249,10 @@ func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) 
 	}
 
 	stale := false
+	appliedIDs := make(map[string]bool, len(specsApplySnaps))
+	for _, snap := range specsApplySnaps {
+		appliedIDs[snap.Ref.ID] = true
+	}
 	statusApplyByID := make(map[string]*firestore.DocumentSnapshot, len(statusApplySnaps))
 	for _, snap := range statusApplySnaps {
 		statusApplyByID[snap.Ref.ID] = snap
@@ -250,17 +289,23 @@ func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) 
 		if err := specsSnap.DataTo(&specsRD); err != nil {
 			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode specs read desire %s: %w", targetCluster, groupKey, specsSnap.Ref.ID, err)
 		}
+		// A read target without an ApplyDesire is observed, not applied: whether
+		// kube-applier ever reports on it depends on the target existing on the
+		// management cluster (for example, its CRD being installed), which Gecko
+		// does not control. It therefore never makes the status of the applied
+		// resources stale; callers see an empty status for it instead.
+		observeOnly := !appliedIDs[specsSnap.Ref.ID]
 		snap, ok := statusReadByID[specsSnap.Ref.ID]
 		if !ok {
 			readDesires = append(readDesires, kubeapplier.ReadDesire{Spec: specsRD.Spec})
-			stale = true
+			stale = stale || !observeOnly
 			continue
 		}
 		var rd kubeapplier.ReadDesire
 		if err := snap.DataTo(&rd); err != nil {
 			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode read desire %s: %w", targetCluster, groupKey, snap.Ref.ID, err)
 		}
-		if rd.Status.ObservedDesireUpdateTime.Before(specsSnap.UpdateTime) {
+		if rd.Status.ObservedDesireUpdateTime.Before(specsSnap.UpdateTime) && !observeOnly {
 			stale = true
 		}
 		// Manually decode status_kubeContent (stored as map[string]any at doc root).
@@ -359,6 +404,57 @@ func (c *Client) Delete(ctx context.Context, targetCluster, groupKey string) err
 	}
 
 	c.log.Infof(ctx, "firestore transport: deleted %d resources for %s/%s", len(applySnaps), targetCluster, groupKey)
+	return nil
+}
+
+// ReleaseObserved removes the ReadDesires registered by Observe for the
+// groupKey. A ReadDesire that shares its document ID with an ApplyDesire belongs
+// to an applied resource and is left for Delete, which removes the pair together.
+func (c *Client) ReleaseObserved(ctx context.Context, targetCluster, groupKey string) error {
+	mc, err := c.clients(ctx, targetCluster)
+	if err != nil {
+		return err
+	}
+
+	readSnaps, err := mc.specs.Collection(collectionReadDesires).
+		Where("spec.groupKey", "==", groupKey).
+		Documents(ctx).GetAll()
+	if err != nil {
+		return fmt.Errorf("firestore transport: ReleaseObserved %s/%s query read desires: %w", targetCluster, groupKey, err)
+	}
+	if len(readSnaps) == 0 {
+		return nil
+	}
+
+	applySnaps, err := mc.specs.Collection(collectionApplyDesires).
+		Where("spec.groupKey", "==", groupKey).
+		Documents(ctx).GetAll()
+	if err != nil {
+		return fmt.Errorf("firestore transport: ReleaseObserved %s/%s query apply desires: %w", targetCluster, groupKey, err)
+	}
+	applied := make(map[string]bool, len(applySnaps))
+	for _, snap := range applySnaps {
+		applied[snap.Ref.ID] = true
+	}
+
+	batch := mc.specs.BulkWriter(ctx)
+	var jobs []*firestore.BulkWriterJob
+	for _, snap := range readSnaps {
+		if applied[snap.Ref.ID] {
+			continue
+		}
+		job, err := batch.Delete(snap.Ref)
+		if err != nil {
+			return fmt.Errorf("firestore transport: ReleaseObserved %s/%s delete read desire: %w", targetCluster, groupKey, err)
+		}
+		jobs = append(jobs, job)
+	}
+	batch.Flush()
+	for _, job := range jobs {
+		if _, err := job.Results(); err != nil {
+			return fmt.Errorf("firestore transport: ReleaseObserved %s/%s read desire write error: %w", targetCluster, groupKey, err)
+		}
+	}
 	return nil
 }
 

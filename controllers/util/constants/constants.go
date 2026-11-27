@@ -52,6 +52,26 @@ const (
 	// Format: "private.orlop.gcp.managed.openshift.io/created-by"
 	// Example value: "user@example.com"
 	AnnotationCreatedBy = "private.orlop.gcp.managed.openshift.io/created-by"
+
+	// AnnotationEtcdBackend records the etcd backend the hc-controller selected
+	// for a Cluster while the Spanner backend was enabled. A Cluster without it
+	// uses Managed etcd. HyperShift does not allow a HostedCluster's etcd
+	// management type to change after creation, so the selection is made once and
+	// only corrected if it contradicts the live HostedCluster. Uses the private
+	// prefix so it is stripped from the public API and cannot be set or modified
+	// by external clients.
+	// Format: "private.orlop.gcp.managed.openshift.io/etcd-backend"
+	// Example values: EtcdBackendManaged, EtcdBackendSpanner
+	AnnotationEtcdBackend = "private.orlop.gcp.managed.openshift.io/etcd-backend"
+)
+
+// Values of AnnotationEtcdBackend.
+const (
+	// EtcdBackendManaged is HyperShift-managed etcd on persistent volumes.
+	EtcdBackendManaged = "managed"
+
+	// EtcdBackendSpanner is socketcd's Spanner-backed Unmanaged etcd.
+	EtcdBackendSpanner = "spanner"
 )
 
 // Finalizer constants for deletion handling.
@@ -72,4 +92,32 @@ const (
 
 	// HyperShiftVersion is the API version for HyperShift resources.
 	HyperShiftVersion = "v1beta1"
+)
+
+// socketcd API and HostedCluster contract constants. socketcd provisions the
+// Spanner-backed etcd for HostedClusters that opt in at creation time.
+const (
+	// SocketCDGroup is the API group of the socketcd SpannerEtcd resource.
+	SocketCDGroup = "etcd.gcp.managed.openshift.io"
+
+	// SocketCDVersion is the API version of the socketcd SpannerEtcd resource.
+	SocketCDVersion = "v1alpha1"
+
+	// SocketCDResource is the plural resource name of SpannerEtcd.
+	SocketCDResource = "spanneretcds"
+
+	// AnnotationSpannerEnabled is the HostedCluster annotation that opts the
+	// cluster in to socketcd. It cannot change after creation.
+	AnnotationSpannerEnabled = "gcp.managed.openshift.io/spanner-enabled"
+
+	// SpannerEtcdServiceName is the Service in the control plane namespace that
+	// socketcd's adapter serves the etcd API on.
+	SpannerEtcdServiceName = "spanner-etcd"
+
+	// SpannerEtcdPort is the port of the SpannerEtcdServiceName Service.
+	SpannerEtcdPort = 2379
+
+	// SpannerEtcdClientSecretSuffix is appended to the HostedCluster name to form
+	// the client Secret that socketcd writes and HyperShift reads.
+	SpannerEtcdClientSecretSuffix = "-spanner-etcd-client"
 )

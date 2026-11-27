@@ -29,7 +29,10 @@ const (
 	NodePoolClusterIDField = "spec.clusterID"
 
 	requeuePending = 15 * time.Second
-	requeueStable  = 5 * time.Minute
+	// requeueCorrected is the short delay after a recorded etcd backend is
+	// corrected, so the next reconcile applies the right type without waiting.
+	requeueCorrected = time.Second
+	requeueStable    = 5 * time.Minute
 )
 
 // Reconciler implements the hc-controller reconcile loop.
@@ -40,11 +43,24 @@ type Reconciler struct {
 	customerLabels      map[string]string
 	pullSecretStoreName string
 	pullSecretGCPKey    string
+	spannerEtcd         bool
+}
+
+// Option customizes a Reconciler.
+type Option func(*Reconciler)
+
+// WithSpannerEtcd makes socketcd's Spanner-backed Unmanaged etcd the backend of
+// clusters that are selected as new, see ensureEtcdBackend for the selection
+// rule. HyperShift does not allow the etcd management type to change after
+// creation, so a recorded choice never changes with this setting. With the
+// setting off no backend is selected or recorded.
+func WithSpannerEtcd(enabled bool) Option {
+	return func(r *Reconciler) { r.spannerEtcd = enabled }
 }
 
 // New creates a new Reconciler.
-func New(transport transport.Client, log logger.Logger, c client.Client, customerLabels map[string]string, pullSecretStoreName, pullSecretGCPKey string) *Reconciler {
-	return &Reconciler{
+func New(transport transport.Client, log logger.Logger, c client.Client, customerLabels map[string]string, pullSecretStoreName, pullSecretGCPKey string, opts ...Option) *Reconciler {
+	r := &Reconciler{
 		transport:           transport,
 		log:                 log,
 		client:              c,
@@ -52,6 +68,10 @@ func New(transport transport.Client, log logger.Logger, c client.Client, custome
 		pullSecretStoreName: pullSecretStoreName,
 		pullSecretGCPKey:    pullSecretGCPKey,
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Reconcile runs the hc-controller loop for one cluster event.
@@ -83,6 +103,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			return reconcile.Result{}, fmt.Errorf("%s: add finalizer: %w", adapterName, err)
 		}
 		return reconcile.Result{}, nil // re-reconcile with finalizer in place
+	}
+
+	if err := r.ensureEtcdBackend(ctx, &cluster); err != nil {
+		return reconcile.Result{}, err
 	}
 
 	ready, err := r.prerequisitesReady(ctx, &cluster, log)
@@ -167,11 +191,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		PullSecretStoreName:       r.pullSecretStoreName,
 		PullSecretGCPKey:          r.pullSecretGCPKey,
 		ResourceLabels:            r.customerLabels,
+		SpannerEtcd:               usesSpannerEtcd(&cluster),
 	}
 
 	manifests, err := manifest.Build(mwInput)
 	if err != nil {
 		return reconcile.Result{}, r.preparationFailure(ctx, &cluster, err)
+	}
+
+	if err := r.observeBackend(ctx, &cluster, placement.ManagementClusterName, groupKey); err != nil {
+		return reconcile.Result{}, err
 	}
 
 	mwStatus, err := r.applyResources(ctx, &cluster, placement.ManagementClusterName, groupKey, manifests)
@@ -183,6 +212,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if mwStatus != nil && mwStatus.Stale {
 		log.Infof(ctx, "hc-controller: cluster %s status is stale, requeueing after %s", req.Name, requeuePending)
 		return reconcile.Result{RequeueAfter: requeuePending}, nil
+	}
+
+	// The live HostedCluster has the final say on its etcd type.
+	corrected, err := r.correctEtcdBackend(ctx, &cluster, placement.ManagementClusterName, groupKey, mwStatus, log)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	if corrected {
+		return reconcile.Result{RequeueAfter: requeueCorrected}, nil
 	}
 
 	// Write status conditions — only update if something changed.
@@ -367,6 +405,20 @@ func (r *Reconciler) handleDeletion(ctx context.Context, cluster *privatev1.Clus
 		return reconcile.Result{RequeueAfter: requeuePending}, nil
 	}
 
+	// Observed read targets are registered before anything is applied, so they can
+	// exist without the ResourcesApplied condition that gates the Delete above.
+	// Release them here, and keep the finalizer if that fails, so they cannot
+	// outlive the cluster and be picked up by a new cluster with the same name.
+	if placement := cluster.Status.PlacementResult; placement != nil && placement.ManagementClusterName != "" {
+		groupKey, err := transport.ClusterGroupKey(cluster.Namespace, cluster.Name)
+		if err != nil {
+			return reconcile.Result{}, fmt.Errorf("%s: build group key: %w", adapterName, err)
+		}
+		if err := r.transport.ReleaseObserved(ctx, placement.ManagementClusterName, groupKey); err != nil {
+			return reconcile.Result{}, fmt.Errorf("%s: release observed resources: %w", adapterName, err)
+		}
+	}
+
 	controllerutil.RemoveFinalizer(cluster, constants.FinalizerCluster)
 	if err := r.client.Update(ctx, cluster); err != nil {
 		return reconcile.Result{}, fmt.Errorf("%s: remove finalizer: %w", adapterName, err)
@@ -468,7 +520,8 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 				ObservedGeneration: gen,
 			})
 		}
-		return a || b || c || e || f, nil
+		g := applyBackendCondition(cluster, backendNotFoundCondition(cluster, gen))
+		return a || b || c || e || f || g, nil
 	}
 
 	// Derive ResourcesApplied from top-level conditions.
@@ -519,8 +572,16 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 		ingressDefaultCert = meta.FindStatusCondition(cluster.Status.HostedClusterResult.ObservedConditions, "IngressDefaultCertificateSynced")
 	}
 
-	// Gate availability on ingress readiness. HyperShift treats a missing ingress
-	// certificate as non-fatal, but Gecko does not report such a cluster as available.
+	backend := observedBackendCondition(cluster, mwStatus, clusterNS, safeName, gen)
+
+	// Gate availability on backend and ingress readiness. HyperShift treats a
+	// missing ingress certificate as non-fatal, but Gecko does not report such a
+	// cluster as available. An explicitly reported backend failure also keeps the
+	// cluster from being reported as usable, with a fixed reason and message:
+	// HostedClusterAvailable is public, while socketcd's own text can carry
+	// internal details and stays on the private EtcdBackendReady. Unknown, which
+	// only means the SpannerEtcd has not been read yet, does not block:
+	// HostedCluster availability already reflects an etcd that cannot serve.
 	availableReason := "HostedClusterNotAvailable"
 	if availableStatus == "True" {
 		availableReason = "HostedClusterAvailable"
@@ -528,6 +589,10 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	availableMessage := ""
 	if availableStatus == "True" {
 		switch {
+		case backendBlocksAvailability(backend):
+			availableStatus = string(metav1.ConditionFalse)
+			availableReason = availableReasonEtcdBackendNotReady
+			availableMessage = availableMessageEtcdBackendNotReady
 		case ingressCredentials != nil && ingressCredentials.Status == metav1.ConditionFalse:
 			availableStatus = string(metav1.ConditionFalse)
 			availableReason = ingressCredentials.Reason
@@ -562,6 +627,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	})
 
 	changed := a || b || d || resultChanged
+	changed = applyBackendCondition(cluster, backend) || changed
 	changed = applyIngressConditions(cluster, mwStatus, ingressCredentials, ingressDefaultCert,
 		ingressCertRequested, ingressCertApplied, hasHCFeedback, clusterNS, gen) || changed
 
