@@ -106,8 +106,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, nil // re-reconcile with finalizer in place
 	}
 
-	spanner, err := r.ensureEtcdBackend(ctx, &cluster)
-	if err != nil {
+	if err := r.ensureEtcdBackend(ctx, &cluster); err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -193,7 +192,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		PullSecretStoreName:       r.pullSecretStoreName,
 		PullSecretGCPKey:          r.pullSecretGCPKey,
 		ResourceLabels:            r.customerLabels,
-		SpannerEtcd:               spanner,
+		SpannerEtcd:               usesSpannerEtcd(&cluster),
 	}
 
 	manifests, err := manifest.Build(mwInput)
@@ -201,7 +200,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, r.preparationFailure(ctx, &cluster, err)
 	}
 
-	if err := r.observeBackend(ctx, &cluster, spanner, placement.ManagementClusterName, groupKey, safeName); err != nil {
+	if err := r.observeBackend(ctx, &cluster, placement.ManagementClusterName, groupKey); err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -522,7 +521,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 				ObservedGeneration: gen,
 			})
 		}
-		g := r.applyBackendCondition(cluster, backendNotFoundCondition(cluster, gen))
+		g := applyBackendCondition(cluster, backendNotFoundCondition(cluster, gen))
 		return a || b || c || e || f || g, nil
 	}
 
@@ -627,7 +626,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	})
 
 	changed := a || b || d || resultChanged
-	changed = r.applyBackendCondition(cluster, backend) || changed
+	changed = applyBackendCondition(cluster, backend) || changed
 	changed = applyIngressConditions(cluster, mwStatus, ingressCredentials, ingressDefaultCert,
 		ingressCertRequested, ingressCertApplied, hasHCFeedback, clusterNS, gen) || changed
 
