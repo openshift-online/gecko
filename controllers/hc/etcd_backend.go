@@ -56,13 +56,19 @@ func hostedClusterName(cluster *privatev1.Cluster) string {
 }
 
 // ensureEtcdBackend selects and records the Cluster's etcd backend the first
-// time the Cluster is seen; usesSpannerEtcd then reports it.
+// time the Cluster is seen while the flag is on; usesSpannerEtcd then reports
+// it.
 //
 // The selection is a one-time decision, written before anything is applied so a
 // later change of the flag, a retry, or a crash cannot select a different type
 // for the HostedCluster. A Cluster whose HostedCluster already exists predates
 // the setting and necessarily has Managed etcd, which is recognized from its
 // status and, failing that, from the resources already dispatched for it.
+//
+// With the flag off nothing is written: a Cluster without a record is Managed.
+// Turning the flag on later still cannot convert a Cluster seen in the
+// meantime, because by then its resources have been dispatched and it is
+// recorded as Managed like any other pre-existing Cluster.
 func (r *Reconciler) ensureEtcdBackend(ctx context.Context, cluster *privatev1.Cluster) error {
 	switch backend := cluster.Annotations[constants.AnnotationEtcdBackend]; backend {
 	case constants.EtcdBackendSpanner, constants.EtcdBackendManaged:
@@ -71,9 +77,12 @@ func (r *Reconciler) ensureEtcdBackend(ctx context.Context, cluster *privatev1.C
 	default:
 		return fmt.Errorf("%s: unknown etcd backend %q in annotation %s", adapterName, backend, constants.AnnotationEtcdBackend)
 	}
+	if !r.spannerEtcd {
+		return nil
+	}
 
 	backend := constants.EtcdBackendManaged
-	if r.spannerEtcd && !hostedClusterMayExist(cluster) {
+	if !hostedClusterMayExist(cluster) {
 		dispatched, err := r.resourcesDispatched(ctx, cluster)
 		if err != nil {
 			return err
@@ -148,7 +157,10 @@ func (r *Reconciler) correctEtcdBackend(ctx context.Context, cluster *privatev1.
 	default:
 		return false, nil
 	}
-	recorded := cluster.Annotations[constants.AnnotationEtcdBackend]
+	recorded := constants.EtcdBackendManaged
+	if backend := cluster.Annotations[constants.AnnotationEtcdBackend]; backend != "" {
+		recorded = backend
+	}
 	if recorded == want {
 		return false, nil
 	}

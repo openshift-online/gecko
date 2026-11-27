@@ -55,9 +55,9 @@ func TestReconcile_EtcdBackend_SelectionIsRecordedOnFirstReconcile(t *testing.T)
 			wantObserved: true,
 		},
 		{
-			name:         "new cluster with the flag off uses Managed",
+			name:         "new cluster with the flag off uses Managed and is not written",
 			flag:         false,
-			wantBackend:  constants.EtcdBackendManaged,
+			wantBackend:  "",
 			wantEtcdType: "Managed",
 		},
 		{
@@ -89,11 +89,74 @@ func TestReconcile_EtcdBackend_SelectionIsRecordedOnFirstReconcile(t *testing.T)
 			_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
 			require.NoError(t, err)
 
-			require.Equal(t, tc.wantBackend, recordedBackend(t, store))
+			if tc.wantBackend == "" {
+				require.False(t, store.updateCalled, "with the flag off no cluster is written")
+			} else {
+				require.Equal(t, tc.wantBackend, recordedBackend(t, store))
+			}
 			require.Equal(t, tc.wantEtcdType, etcdType(t, tr))
 			require.Equal(t, tc.wantObserved, len(tr.ObserveCalls) > 0)
 		})
 	}
+}
+
+func TestReconcile_EtcdBackend_FlagOffNeverWritesToClusters(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		prepare  func(*privatev1.Cluster)
+		feedback map[string]string
+	}{
+		{"new cluster", nil, map[string]string{"availableCondition": "False"}},
+		{"cluster with a HostedCluster observed", func(c *privatev1.Cluster) {
+			c.Status.HostedClusterResult = &privatev1.HostedClusterResult{Version: "4.15.0"}
+		}, map[string]string{"availableCondition": "True", "etcdManagementType": "Managed"}},
+		{"cluster with resources applied", func(c *privatev1.Cluster) {
+			c.Status.Conditions = []metav1.Condition{{Type: "ResourcesApplied", Status: metav1.ConditionTrue, Reason: "Applied"}}
+		}, map[string]string{"availableCondition": "True", "etcdManagementType": "Managed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cluster := buildReadyCluster("cluster-flag-off", "4.15.0")
+			if tc.prepare != nil {
+				tc.prepare(cluster)
+			}
+			groupKey := mustClusterGroupKey("hyperfleet", cluster.Name)
+			tr := mock.New()
+			tr.StatusOverrides[spannerMCName+"/"+groupKey] = &transport.Status{
+				Conditions:       []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+				ResourceStatuses: map[string]map[string]string{hostedClusterResourceKey(cluster): tc.feedback},
+			}
+			store := &mockStoreClient{cluster: cluster, statusWriter: &mockStatusWriter{}}
+			r := hc.New(tr, testLogger(t), store, nil, "", "")
+
+			for i := 0; i < 2; i++ {
+				_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+				require.NoError(t, err)
+			}
+			require.False(t, store.updateCalled, "the default configuration must not write to any cluster")
+			require.Empty(t, tr.ObserveCalls)
+			require.Equal(t, "Managed", appliedEtcdType(t, tr.ApplyCalls[0]))
+		})
+	}
+}
+
+func TestReconcile_EtcdBackend_UnrecordedSpannerClusterIsRecordedFromTheLiveType(t *testing.T) {
+	// A socketcd-backed HostedCluster without a record, for example because the
+	// annotation was lost, is Spanner whatever the flag says.
+	cluster := buildReadyCluster("cluster-lost-record", "4.15.0")
+	groupKey := mustClusterGroupKey("hyperfleet", cluster.Name)
+	tr := mock.New()
+	tr.StatusOverrides[spannerMCName+"/"+groupKey] = &transport.Status{
+		Conditions: []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+		ResourceStatuses: map[string]map[string]string{hostedClusterResourceKey(cluster): {
+			"availableCondition": "True", "etcdManagementType": "Unmanaged", "spannerEnabled": "true",
+		}},
+	}
+	store := &mockStoreClient{cluster: cluster, statusWriter: &mockStatusWriter{}}
+	r := hc.New(tr, testLogger(t), store, nil, "", "")
+
+	_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.NoError(t, err)
+	require.Equal(t, constants.EtcdBackendSpanner, recordedBackend(t, store))
 }
 
 func TestReconcile_EtcdBackend_RecordedBackendWinsOverTheFlag(t *testing.T) {
