@@ -36,7 +36,9 @@ type Status struct {
 	ResourceStatuses map[string]map[string]string
 	// Stale is true when an expected status document is missing or does not yet
 	// reflect the most recently written spec. Callers should requeue sooner and
-	// avoid trusting condition values until Stale becomes false.
+	// avoid trusting condition values until Stale becomes false. Read-only
+	// targets registered by Observe are excluded: their status may never arrive,
+	// and is simply empty in ResourceStatuses until it does.
 	Stale bool
 }
 

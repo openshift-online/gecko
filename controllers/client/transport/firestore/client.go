@@ -212,7 +212,8 @@ func (c *Client) Observe(ctx context.Context, targetCluster, groupKey string, re
 }
 
 // GetStatus compares expected Desire documents with the ApplyDesire and
-// ReadDesire statuses currently available for the given groupKey.
+// ReadDesire statuses currently available for the given groupKey. Read targets
+// registered by Observe do not contribute to Stale.
 func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) (*transport.Status, error) {
 	mc, err := c.clients(ctx, targetCluster)
 	if err != nil {
@@ -248,6 +249,10 @@ func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) 
 	}
 
 	stale := false
+	appliedIDs := make(map[string]bool, len(specsApplySnaps))
+	for _, snap := range specsApplySnaps {
+		appliedIDs[snap.Ref.ID] = true
+	}
 	statusApplyByID := make(map[string]*firestore.DocumentSnapshot, len(statusApplySnaps))
 	for _, snap := range statusApplySnaps {
 		statusApplyByID[snap.Ref.ID] = snap
@@ -284,17 +289,23 @@ func (c *Client) GetStatus(ctx context.Context, targetCluster, groupKey string) 
 		if err := specsSnap.DataTo(&specsRD); err != nil {
 			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode specs read desire %s: %w", targetCluster, groupKey, specsSnap.Ref.ID, err)
 		}
+		// A read target without an ApplyDesire is observed, not applied: whether
+		// kube-applier ever reports on it depends on the target existing on the
+		// management cluster (for example, its CRD being installed), which Gecko
+		// does not control. It therefore never makes the status of the applied
+		// resources stale; callers see an empty status for it instead.
+		observeOnly := !appliedIDs[specsSnap.Ref.ID]
 		snap, ok := statusReadByID[specsSnap.Ref.ID]
 		if !ok {
 			readDesires = append(readDesires, kubeapplier.ReadDesire{Spec: specsRD.Spec})
-			stale = true
+			stale = stale || !observeOnly
 			continue
 		}
 		var rd kubeapplier.ReadDesire
 		if err := snap.DataTo(&rd); err != nil {
 			return nil, fmt.Errorf("firestore transport: GetStatus %s/%s decode read desire %s: %w", targetCluster, groupKey, snap.Ref.ID, err)
 		}
-		if rd.Status.ObservedDesireUpdateTime.Before(specsSnap.UpdateTime) {
+		if rd.Status.ObservedDesireUpdateTime.Before(specsSnap.UpdateTime) && !observeOnly {
 			stale = true
 		}
 		// Manually decode status_kubeContent (stored as map[string]any at doc root).

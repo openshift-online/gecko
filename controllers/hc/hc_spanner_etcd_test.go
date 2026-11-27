@@ -323,3 +323,37 @@ func TestReconcile_Deletion_DoesNotReleaseWithoutPlacement(t *testing.T) {
 	require.Empty(t, tr.ReleaseObservedCalls, "no management cluster means nothing was registered")
 	require.True(t, store.updateCalled)
 }
+
+func TestReconcile_SpannerEtcd_StaleStatusIsNotWritten(t *testing.T) {
+	cluster := buildReadyCluster("cluster-spanner", "4.15.0")
+	groupKey := mustClusterGroupKey("hyperfleet", cluster.Name)
+	tr := mock.New()
+	tr.StatusOverrides[spannerMCName+"/"+groupKey] = &transport.Status{
+		Conditions: []metav1.Condition{{Type: "Applied", Status: metav1.ConditionTrue, Reason: "AppliedSuccessfully"}},
+		Stale:      true,
+	}
+	store := &mockStoreClient{cluster: cluster, statusWriter: &mockStatusWriter{}}
+	r := hc.New(tr, testLogger(t), store, nil, "", "", hc.WithSpannerEtcd(true))
+
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.NoError(t, err)
+	require.Equal(t, 15*time.Second, result.RequeueAfter)
+	require.Len(t, tr.ObserveCalls, 1)
+	require.Nil(t, store.statusWriter.captured, "no condition, including EtcdBackendReady, is written from stale status")
+}
+
+func TestReconcile_SpannerEtcd_NoStatusYetReportsBackendNotFound(t *testing.T) {
+	cluster := buildReadyCluster("cluster-spanner", "4.15.0")
+	// Apply returns a nil status to simulate resources that have no status yet.
+	store := &mockStoreClient{cluster: cluster, statusWriter: &mockStatusWriter{}}
+	r := hc.New(&errTransport{}, testLogger(t), store, nil, "", "", hc.WithSpannerEtcd(true))
+
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.NoError(t, err)
+	require.Equal(t, 15*time.Second, result.RequeueAfter)
+
+	backend := meta.FindStatusCondition(updatedCluster(t, store).Status.Conditions, "EtcdBackendReady")
+	require.NotNil(t, backend)
+	require.Equal(t, metav1.ConditionFalse, backend.Status)
+	require.Equal(t, "ResourcesNotFound", backend.Reason)
+}
