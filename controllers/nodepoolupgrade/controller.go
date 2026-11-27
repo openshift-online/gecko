@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/openshift-online/gecko/controllers/util/catalog"
 	privatev1 "github.com/openshift-online/gecko/platform-api/api/private/v1"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -34,9 +35,40 @@ const (
 type Reconciler struct {
 	client client.Client
 	now    func() time.Time
+	// iamEnforcement gates scheduling on the shared IAM dispatch predicate.
+	// The nodepool installer's Apply boundary re-checks it independently.
+	iamEnforcement bool
+	// iamCatalogReader is the uncached reader used to evaluate the shared IAM
+	// dispatch predicate. A Version availability change must never be
+	// evaluated from a stale informer cache at a scheduling boundary; it
+	// falls back to the cached client when not configured.
+	iamCatalogReader client.Reader
 }
 
 func NewReconciler(c client.Client) *Reconciler { return &Reconciler{client: c, now: time.Now} }
+
+// WithIAMDispatchEnforcement gates scheduling on the IAM dispatch predicate.
+func (r *Reconciler) WithIAMDispatchEnforcement(enabled bool) *Reconciler {
+	r.iamEnforcement = enabled
+	return r
+}
+
+// WithCatalogReader sets the reader used to evaluate the IAM dispatch
+// predicate. Pass the manager's uncached API reader so a Version availability
+// change is always evaluated fresh at the scheduling boundary.
+func (r *Reconciler) WithCatalogReader(reader client.Reader) *Reconciler {
+	r.iamCatalogReader = reader
+	return r
+}
+
+// dispatchReader returns the reader for the shared IAM dispatch predicate,
+// preferring the uncached reader over the cached client.
+func (r *Reconciler) dispatchReader() client.Reader {
+	if r.iamCatalogReader != nil {
+		return r.iamCatalogReader
+	}
+	return r.client
+}
 
 func (r *Reconciler) Reconcile(ctx context.Context, key reconcile.Request) (reconcile.Result, error) {
 	var pool privatev1.NodePool
@@ -136,6 +168,16 @@ type validationError struct{ message string }
 
 func (e *validationError) Error() string { return e.message }
 
+// iamBlockError reports the shared IAM dispatch predicate blocking an
+// otherwise valid target. Unlike a validation error it is not degraded: the
+// target is correct and waiting on an IAM prerequisite.
+type iamBlockError struct {
+	reason  string
+	message string
+}
+
+func (e *iamBlockError) Error() string { return e.message }
+
 func (r *Reconciler) validate(ctx context.Context, pool *privatev1.NodePool, target string) error {
 	var cluster privatev1.Cluster
 	if err := r.client.Get(ctx, types.NamespacedName{Namespace: pool.Namespace, Name: pool.Spec.ClusterID}, &cluster); err != nil {
@@ -148,15 +190,34 @@ func (r *Reconciler) validate(ctx context.Context, pool *privatev1.NodePool, tar
 	if err := privatev1.ValidateNodePoolUpgradeTarget(pool, &cluster, &release, target); err != nil {
 		return &validationError{err.Error()}
 	}
+	// One shared dispatch predicate at the scheduling boundary; the nodepool
+	// installer's Apply boundary re-checks it independently.
+	if r.iamEnforcement {
+		evaluation, err := catalog.EvaluateDispatch(ctx, r.dispatchReader(), &cluster, target, catalog.ReleaseGroup(&cluster))
+		if err != nil {
+			return err
+		}
+		if permitted, reason, message := evaluation.NewWorkPermitted(); !permitted {
+			return &iamBlockError{reason: reason, message: message}
+		}
+	}
 	return nil
 }
 
 func (r *Reconciler) validationResult(ctx context.Context, before, pool *privatev1.NodePool, err error) (reconcile.Result, error) {
 	var invalid *validationError
-	if !errors.As(err, &invalid) {
-		return reconcile.Result{}, err
+	if errors.As(err, &invalid) {
+		return r.fail(ctx, before, pool, "TargetRejected", invalid.message)
 	}
-	return r.fail(ctx, before, pool, "TargetRejected", invalid.message)
+	var blocked *iamBlockError
+	if errors.As(err, &blocked) {
+		// The target stays selected and waiting: an IAM prerequisite, not a
+		// rejected configuration, so it is not degraded.
+		conditions(pool, metav1.ConditionFalse, metav1.ConditionFalse, blocked.reason, blocked.message)
+		setCondition(pool, privatev1.NodePoolUpgradeSubmitted, metav1.ConditionFalse, "NotSubmitted", "The desired upgrade has not been dispatched")
+		return r.persist(ctx, before, pool, waitInterval)
+	}
+	return reconcile.Result{}, err
 }
 
 func (r *Reconciler) fail(ctx context.Context, before, pool *privatev1.NodePool, reason, message string) (reconcile.Result, error) {
