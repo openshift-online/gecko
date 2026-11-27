@@ -119,6 +119,13 @@ Builds HyperShift HostedCluster manifests from the cluster spec (GCP platform fi
 
 Tracks `IngressCredentialsReady`, `IngressCertificateReady`, and `IngressDefaultCertificateReady`. When either HyperShift ingress condition is `False`, the cluster is not reported as available.
 
+**Spanner-backed etcd (socketcd).** With `--spanner-etcd-enabled` (Helm `spannerEtcd.enabled`, off by default), clusters that the controller first reconciles while the flag is on are created with `Unmanaged` etcd and the contract from the [socketcd design](https://github.com/openshift-online/socketcd/blob/main/docs/design.md): the `gcp.managed.openshift.io/spanner-enabled` annotation, an `https://spanner-etcd:2379` endpoint, and the client Secret `<name>-spanner-etcd-client`. socketcd then provisions the Spanner backend, TLS and adapter.
+- HyperShift does not allow the etcd management type to change, so the choice is recorded once in the private annotation `private.orlop.gcp.managed.openshift.io/etcd-backend` (`spanner` or `managed`) and followed from then on. A cluster without a record uses `Managed` etcd. Turning the flag on or off therefore only affects clusters that have not been recorded, and a cluster whose HostedCluster already exists stays `Managed`.
+- While the flag is off nothing is recorded and no cluster is written.
+- The record is corrected if it contradicts the live HostedCluster's `spec.etcd.managementType`. `Unmanaged` counts as Spanner only if the HostedCluster carries the opt-in annotation.
+- The controller registers the cluster's `SpannerEtcd` as a read-only target (`Observe`) and tracks it in the private `EtcdBackendReady` condition, with socketcd's reason and message. A reported failure keeps `HostedClusterAvailable` `False` with the fixed reason `EtcdBackendNotReady`; socketcd's text stays on the private condition. A backend that has not reported yet is `Unknown` and does not block availability.
+- Management clusters need socketcd installed, and kube-applier needs to be able to read `spanneretcds`. Until then `EtcdBackendReady` stays `Unknown`.
+
 ### nodepool-controller
 
 Reconciles `NodePool` resources. Builds and applies NodePool manifests to the management cluster where the parent cluster is placed.
