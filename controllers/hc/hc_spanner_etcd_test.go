@@ -135,9 +135,9 @@ func TestReconcile_SpannerEtcd_BackendStatus(t *testing.T) {
 			wantBackend:      metav1.ConditionFalse,
 			wantBackendWhy:   "WaitingForBackend",
 			wantAvailable:    metav1.ConditionFalse,
-			wantAvailableWhy: "WaitingForBackend",
+			wantAvailableWhy: "EtcdBackendNotReady",
 			wantBackendMsg:   "BackendReady: Spanner instance not ready",
-			wantAvailableMsg: "BackendReady: Spanner instance not ready",
+			wantAvailableMsg: "The etcd backend of the cluster is not ready",
 			wantRequeue:      15 * time.Second,
 		},
 		{
@@ -146,7 +146,8 @@ func TestReconcile_SpannerEtcd_BackendStatus(t *testing.T) {
 			wantBackend:      metav1.ConditionFalse,
 			wantBackendWhy:   "BackendNotReady",
 			wantAvailable:    metav1.ConditionFalse,
-			wantAvailableWhy: "BackendNotReady",
+			wantAvailableWhy: "EtcdBackendNotReady",
+			wantAvailableMsg: "The etcd backend of the cluster is not ready",
 			wantRequeue:      15 * time.Second,
 		},
 		{
@@ -159,9 +160,9 @@ func TestReconcile_SpannerEtcd_BackendStatus(t *testing.T) {
 			wantBackend:      metav1.ConditionFalse,
 			wantBackendWhy:   "BackendNotReported",
 			wantAvailable:    metav1.ConditionFalse,
-			wantAvailableWhy: "BackendNotReported",
+			wantAvailableWhy: "EtcdBackendNotReady",
 			wantBackendMsg:   "reported by socketcd",
-			wantAvailableMsg: "reported by socketcd",
+			wantAvailableMsg: "The etcd backend of the cluster is not ready",
 			wantRequeue:      15 * time.Second,
 		},
 		{
@@ -387,4 +388,27 @@ func TestReconcile_SpannerEtcd_NoStatusYetReportsBackendNotFound(t *testing.T) {
 	require.NotNil(t, backend)
 	require.Equal(t, metav1.ConditionFalse, backend.Status)
 	require.Equal(t, "ResourcesNotFound", backend.Reason)
+}
+
+func TestReconcile_SpannerEtcd_BackendDetailsStayOffThePublicCondition(t *testing.T) {
+	const internal = "ApplyFailed: spanneretcds is forbidden: project central-spanner-prod"
+	cluster := buildReadyCluster("cluster-spanner", "4.15.0")
+	r, store, _ := spannerReconciler(t, cluster, true, map[string]string{
+		"readyCondition":        "False",
+		"readyConditionReason":  "ApplyFailed",
+		"readyConditionMessage": internal,
+	}, "True")
+
+	_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.NoError(t, err)
+
+	conditions := updatedCluster(t, store).Status.Conditions
+	backend := meta.FindStatusCondition(conditions, "EtcdBackendReady")
+	require.Equal(t, internal, backend.Message, "operators get socketcd's detail on the private condition")
+	require.Equal(t, "ApplyFailed", backend.Reason)
+
+	available := meta.FindStatusCondition(conditions, "HostedClusterAvailable")
+	require.Equal(t, metav1.ConditionFalse, available.Status)
+	require.NotContains(t, available.Message, "central-spanner-prod", "HostedClusterAvailable is public")
+	require.NotContains(t, available.Reason, "ApplyFailed")
 }

@@ -17,6 +17,13 @@ import (
 // opted-in cluster is ready to serve etcd.
 const conditionEtcdBackendReady = "EtcdBackendReady"
 
+// The reason and message of HostedClusterAvailable while the backend is failing.
+// They are fixed because the condition is public and socketcd's text is not.
+const (
+	availableReasonEtcdBackendNotReady  = "EtcdBackendNotReady"
+	availableMessageEtcdBackendNotReady = "The etcd backend of the cluster is not ready"
+)
+
 // observeBackend registers the SpannerEtcd of a cluster that uses the socketcd
 // backend as a read-only target. Other clusters have nothing to observe.
 func (r *Reconciler) observeBackend(ctx context.Context, cluster *privatev1.Cluster, managementCluster, groupKey string) error {

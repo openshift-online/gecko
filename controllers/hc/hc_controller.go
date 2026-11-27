@@ -579,9 +579,11 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 	// Gate availability on backend and ingress readiness. HyperShift treats a
 	// missing ingress certificate as non-fatal, but Gecko does not report such a
 	// cluster as available. An explicitly reported backend failure also keeps the
-	// cluster from being reported as usable. Unknown, including a backend that has
-	// not reported yet, does not: HostedCluster availability already reflects an
-	// etcd that cannot serve.
+	// cluster from being reported as usable, with a fixed reason and message:
+	// HostedClusterAvailable is public, while socketcd's own text can carry
+	// internal details and stays on the private EtcdBackendReady. Unknown,
+	// including a backend that has not reported yet, does not block:
+	// HostedCluster availability already reflects an etcd that cannot serve.
 	availableReason := "HostedClusterNotAvailable"
 	if availableStatus == "True" {
 		availableReason = "HostedClusterAvailable"
@@ -591,8 +593,8 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 		switch {
 		case backendBlocksAvailability(backend):
 			availableStatus = string(metav1.ConditionFalse)
-			availableReason = backend.Reason
-			availableMessage = backend.Message
+			availableReason = availableReasonEtcdBackendNotReady
+			availableMessage = availableMessageEtcdBackendNotReady
 		case ingressCredentials != nil && ingressCredentials.Status == metav1.ConditionFalse:
 			availableStatus = string(metav1.ConditionFalse)
 			availableReason = ingressCredentials.Reason

@@ -207,7 +207,7 @@ func TestReconcile_EtcdBackend_SpannerFailureStillGatesAvailabilityWithFlagOff(t
 
 	available := meta.FindStatusCondition(updatedCluster(t, store).Status.Conditions, "HostedClusterAvailable")
 	require.Equal(t, metav1.ConditionFalse, available.Status)
-	require.Equal(t, "WaitingForBackend", available.Reason)
+	require.Equal(t, "EtcdBackendNotReady", available.Reason)
 }
 
 func TestReconcile_EtcdBackend_FlagChangeDuringCreationDoesNotChangeTheBackend(t *testing.T) {
