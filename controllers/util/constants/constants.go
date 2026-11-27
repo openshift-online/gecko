@@ -54,12 +54,12 @@ const (
 	AnnotationCreatedBy = "private.orlop.gcp.managed.openshift.io/created-by"
 
 	// AnnotationEtcdBackend records the etcd backend the hc-controller selected
-	// for a Cluster the first time it reconciled it with the Spanner backend
-	// enabled. A Cluster without it uses Managed etcd. HyperShift does not allow a
-	// HostedCluster's etcd management type to change after creation, so the
-	// selection is made once and never revisited. Uses the private prefix so it is
-	// stripped from the public API and cannot be set or modified by external
-	// clients.
+	// for a Cluster while the Spanner backend was enabled. A Cluster without it
+	// uses Managed etcd. HyperShift does not allow a HostedCluster's etcd
+	// management type to change after creation, so the selection is made once and
+	// only corrected if it contradicts the live HostedCluster. Uses the private
+	// prefix so it is stripped from the public API and cannot be set or modified
+	// by external clients.
 	// Format: "private.orlop.gcp.managed.openshift.io/etcd-backend"
 	// Example values: EtcdBackendManaged, EtcdBackendSpanner
 	AnnotationEtcdBackend = "private.orlop.gcp.managed.openshift.io/etcd-backend"

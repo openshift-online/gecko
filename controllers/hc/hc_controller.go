@@ -50,12 +50,13 @@ type Reconciler struct {
 type Option func(*Reconciler)
 
 // WithSpannerEtcd makes socketcd's Spanner-backed Unmanaged etcd the backend of
-// clusters the reconciler sees for the first time. HyperShift does not allow the
-// etcd management type to change after creation, so the backend is recorded in
-// AnnotationEtcdBackend when a Cluster is first reconciled with the setting on,
-// and never changes afterwards: the setting never affects a cluster that has
-// already been recorded, or one whose HostedCluster already exists. With the
-// setting off nothing is recorded and no Cluster is written.
+// clusters that have no recorded backend and no HostedCluster yet. HyperShift
+// does not allow the etcd management type to change after creation, so the
+// choice is recorded in AnnotationEtcdBackend and a recorded choice never
+// changes with this setting; a cluster whose HostedCluster already exists is
+// recorded as Managed. With the setting off no backend is selected or recorded,
+// and a cluster without a record uses Managed etcd. A record is only ever
+// corrected to match the live HostedCluster.
 func WithSpannerEtcd(enabled bool) Option {
 	return func(r *Reconciler) { r.spannerEtcd = enabled }
 }
