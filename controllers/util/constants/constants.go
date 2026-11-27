@@ -52,6 +52,25 @@ const (
 	// Format: "private.orlop.gcp.managed.openshift.io/created-by"
 	// Example value: "user@example.com"
 	AnnotationCreatedBy = "private.orlop.gcp.managed.openshift.io/created-by"
+
+	// AnnotationEtcdBackend records the etcd backend the hc-controller selected
+	// for a Cluster the first time it reconciled it. HyperShift does not allow a
+	// HostedCluster's etcd management type to change after creation, so the
+	// selection is made once and never revisited. Uses the private prefix so it is
+	// stripped from the public API and cannot be set or modified by external
+	// clients.
+	// Format: "private.orlop.gcp.managed.openshift.io/etcd-backend"
+	// Example values: EtcdBackendManaged, EtcdBackendSpanner
+	AnnotationEtcdBackend = "private.orlop.gcp.managed.openshift.io/etcd-backend"
+)
+
+// Values of AnnotationEtcdBackend.
+const (
+	// EtcdBackendManaged is HyperShift-managed etcd on persistent volumes.
+	EtcdBackendManaged = "managed"
+
+	// EtcdBackendSpanner is socketcd's Spanner-backed Unmanaged etcd.
+	EtcdBackendSpanner = "spanner"
 )
 
 // Finalizer constants for deletion handling.

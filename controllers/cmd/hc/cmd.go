@@ -81,8 +81,9 @@ func NewCommand(rf *setup.RootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&pullSecretGCPKey, "pull-secret-gcp-key", "default-openshift-pull-secret", "GCP Secret Manager key used for HostedCluster pull secret")
 
 	cmd.Flags().BoolVar(&spannerEtcdEnabled, "spanner-etcd-enabled", false,
-		"Create new HostedClusters with socketcd's Spanner-backed Unmanaged etcd instead of Managed etcd. "+
-			"HyperShift does not allow the etcd management type to change after creation, so this only affects clusters created while it is set")
+		"Use socketcd's Spanner-backed Unmanaged etcd instead of Managed etcd for clusters the controller sees for the first time. "+
+			"HyperShift does not allow the etcd management type to change, so each cluster's backend is recorded when it is first reconciled "+
+			"and never changes: toggling this flag affects only clusters not yet recorded, and clusters whose HostedCluster already exists stay Managed")
 
 	return cmd
 }

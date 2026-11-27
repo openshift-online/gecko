@@ -16,11 +16,15 @@ pullSecret:
   storeName: gcp-secret-manager
   gcpKey: default-openshift-pull-secret
 
-# Spanner-backed etcd through socketcd. When enabled, new HostedClusters are
-# created with Unmanaged etcd and socketcd provisions the backend. HyperShift
-# does not allow the etcd management type to change after creation, so this only
-# affects clusters created while it is enabled. Requires socketcd on the
-# management clusters.
+# Spanner-backed etcd through socketcd. When enabled, clusters that the
+# controller sees for the first time are created with Unmanaged etcd and socketcd
+# provisions the backend. HyperShift does not allow the etcd management type to
+# change, so the controller records each cluster's backend in a private
+# annotation when it first reconciles the cluster and never changes it again.
+# Toggling this value therefore affects only clusters that have not been
+# recorded yet: clusters created while it was enabled keep Spanner-backed etcd
+# after it is disabled, and existing clusters keep Managed etcd after it is
+# enabled. Requires socketcd on the management clusters.
 spannerEtcd:
   enabled: false
 

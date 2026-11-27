@@ -46,10 +46,12 @@ type Reconciler struct {
 // Option customizes a Reconciler.
 type Option func(*Reconciler)
 
-// WithSpannerEtcd makes the reconciler create HostedClusters with socketcd's
-// Spanner-backed Unmanaged etcd and report the backend's readiness. HyperShift
-// does not allow the etcd management type to change after creation, so the
-// setting only takes effect for clusters that are created while it is on.
+// WithSpannerEtcd makes socketcd's Spanner-backed Unmanaged etcd the backend of
+// clusters the reconciler sees for the first time. HyperShift does not allow the
+// etcd management type to change after creation, so each Cluster's backend is
+// recorded in AnnotationEtcdBackend when it is first reconciled and never
+// changes afterwards: the setting never affects a cluster that has already been
+// recorded, or one whose HostedCluster already exists.
 func WithSpannerEtcd(enabled bool) Option {
 	return func(r *Reconciler) { r.spannerEtcd = enabled }
 }
@@ -99,6 +101,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 			return reconcile.Result{}, fmt.Errorf("%s: add finalizer: %w", adapterName, err)
 		}
 		return reconcile.Result{}, nil // re-reconcile with finalizer in place
+	}
+
+	spanner, err := r.ensureEtcdBackend(ctx, &cluster)
+	if err != nil {
+		return reconcile.Result{}, err
 	}
 
 	ready, err := r.prerequisitesReady(ctx, &cluster, log)
@@ -183,7 +190,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		PullSecretStoreName:       r.pullSecretStoreName,
 		PullSecretGCPKey:          r.pullSecretGCPKey,
 		ResourceLabels:            r.customerLabels,
-		SpannerEtcd:               r.spannerEtcd,
+		SpannerEtcd:               spanner,
 	}
 
 	manifests, err := manifest.Build(mwInput)
@@ -191,7 +198,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 		return reconcile.Result{}, r.preparationFailure(ctx, &cluster, err)
 	}
 
-	if r.spannerEtcd {
+	if spanner {
 		spannerEtcd := spannerEtcdRef(&cluster, safeName)
 		if err := r.transport.Observe(ctx, placement.ManagementClusterName, groupKey, []transport.ResourceRef{spannerEtcd}); err != nil {
 			return reconcile.Result{}, fmt.Errorf("%s: observe spanner etcd: %w", adapterName, err)
@@ -506,7 +513,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 				ObservedGeneration: gen,
 			})
 		}
-		g := r.applyBackendCondition(cluster, r.backendNotFoundCondition(gen))
+		g := r.applyBackendCondition(cluster, backendNotFoundCondition(cluster, gen))
 		return a || b || c || e || f || g, nil
 	}
 
@@ -558,7 +565,7 @@ func (r *Reconciler) applyStatusConditions(cluster *privatev1.Cluster, mwStatus 
 		ingressDefaultCert = meta.FindStatusCondition(cluster.Status.HostedClusterResult.ObservedConditions, "IngressDefaultCertificateSynced")
 	}
 
-	backend := r.observedBackendCondition(mwStatus, clusterNS, safeName, gen)
+	backend := observedBackendCondition(cluster, mwStatus, clusterNS, safeName, gen)
 
 	// Gate availability on backend and ingress readiness. HyperShift treats a
 	// missing ingress certificate as non-fatal, but Gecko does not report such a
@@ -638,10 +645,59 @@ func spannerEtcdRef(cluster *privatev1.Cluster, safeName string) transport.Resou
 	}
 }
 
+// ensureEtcdBackend returns whether the Cluster uses socketcd's Spanner-backed
+// etcd, selecting and recording the backend the first time the Cluster is seen.
+//
+// The selection is a one-time decision, written before anything is applied so a
+// later change of the flag, a retry, or a crash cannot select a different type
+// for the HostedCluster. A Cluster whose HostedCluster already exists predates
+// the setting and necessarily has Managed etcd.
+func (r *Reconciler) ensureEtcdBackend(ctx context.Context, cluster *privatev1.Cluster) (bool, error) {
+	switch backend := cluster.Annotations[constants.AnnotationEtcdBackend]; backend {
+	case constants.EtcdBackendSpanner:
+		return true, nil
+	case constants.EtcdBackendManaged:
+		return false, nil
+	case "":
+	default:
+		return false, fmt.Errorf("%s: unknown etcd backend %q in annotation %s", adapterName, backend, constants.AnnotationEtcdBackend)
+	}
+
+	spanner := r.spannerEtcd && !hostedClusterMayExist(cluster)
+	backend := constants.EtcdBackendManaged
+	if spanner {
+		backend = constants.EtcdBackendSpanner
+	}
+	if cluster.Annotations == nil {
+		cluster.Annotations = map[string]string{}
+	}
+	cluster.Annotations[constants.AnnotationEtcdBackend] = backend
+	if err := r.client.Update(ctx, cluster); err != nil {
+		return false, fmt.Errorf("%s: record etcd backend: %w", adapterName, err)
+	}
+	return spanner, nil
+}
+
+// hostedClusterMayExist reports whether the Cluster's HostedCluster has been
+// applied or observed. Such a Cluster was created before it was possible to
+// select a backend.
+func hostedClusterMayExist(cluster *privatev1.Cluster) bool {
+	return cluster.Status.HostedClusterResult != nil ||
+		meta.IsStatusConditionTrue(cluster.Status.Conditions, "ResourcesApplied")
+}
+
+// usesSpannerEtcd reports whether the recorded backend of the Cluster is
+// socketcd's Spanner-backed etcd. Observation, status and gating follow it
+// rather than the flag, so they keep working for a cluster created under the
+// flag after the flag is turned off.
+func usesSpannerEtcd(cluster *privatev1.Cluster) bool {
+	return cluster.Annotations[constants.AnnotationEtcdBackend] == constants.EtcdBackendSpanner
+}
+
 // observedBackendCondition returns the EtcdBackendReady condition for the
-// reconcile, or nil when the cluster is not created with the socketcd backend.
-func (r *Reconciler) observedBackendCondition(mwStatus *transport.Status, clusterNS, safeName string, gen int64) *metav1.Condition {
-	if !r.spannerEtcd {
+// reconcile, or nil when the cluster does not use the socketcd backend.
+func observedBackendCondition(cluster *privatev1.Cluster, mwStatus *transport.Status, clusterNS, safeName string, gen int64) *metav1.Condition {
+	if !usesSpannerEtcd(cluster) {
 		return nil
 	}
 	key := transport.ResourceKey(constants.SocketCDGroup, constants.SocketCDVersion, constants.SocketCDResource, clusterNS, safeName)
@@ -649,9 +705,10 @@ func (r *Reconciler) observedBackendCondition(mwStatus *transport.Status, cluste
 }
 
 // backendNotFoundCondition returns the EtcdBackendReady condition used before
-// any resources have been applied, or nil when the backend is not enabled.
-func (r *Reconciler) backendNotFoundCondition(gen int64) *metav1.Condition {
-	if !r.spannerEtcd {
+// any resources have been applied, or nil when the cluster does not use the
+// socketcd backend.
+func backendNotFoundCondition(cluster *privatev1.Cluster, gen int64) *metav1.Condition {
+	if !usesSpannerEtcd(cluster) {
 		return nil
 	}
 	return &metav1.Condition{
@@ -664,7 +721,7 @@ func (r *Reconciler) backendNotFoundCondition(gen int64) *metav1.Condition {
 }
 
 // applyBackendCondition writes the backend condition, or removes a leftover one
-// when the backend is disabled because nothing observes it any more. Returns
+// when the cluster does not use the backend because nothing observes it. Returns
 // true if the conditions changed.
 func (r *Reconciler) applyBackendCondition(cluster *privatev1.Cluster, backend *metav1.Condition) bool {
 	if backend == nil {
