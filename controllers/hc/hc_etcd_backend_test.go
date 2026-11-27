@@ -425,6 +425,24 @@ func TestReconcile_EtcdBackend_RecordIsCorrectedFromTheLiveHostedCluster(t *test
 	}
 }
 
+// A record that contradicts the HostedCluster shows up as HyperShift rejecting the
+// apply, so the correction must not depend on the apply having succeeded.
+func TestReconcile_EtcdBackend_RecordIsCorrectedWhenTheApplyFails(t *testing.T) {
+	r, store, tr, cluster := liveTypeReconciler(t, constants.EtcdBackendSpanner,
+		map[string]string{"availableCondition": "True", "etcdManagementType": "Managed"}, false)
+	key := spannerMCName + "/" + mustClusterGroupKey("hyperfleet", cluster.Name)
+	tr.StatusOverrides[key].Conditions = []metav1.Condition{{
+		Type: "Applied", Status: metav1.ConditionFalse, Reason: "ApplyFailed",
+		Message: "etcd.managementType is immutable",
+	}}
+
+	result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+	require.NoError(t, err)
+	require.Equal(t, time.Second, result.RequeueAfter)
+	require.Equal(t, constants.EtcdBackendManaged, recordedBackend(t, store))
+	require.False(t, store.statusWriter.called, "the failed apply is not reported before the record is right")
+}
+
 func TestReconcile_EtcdBackend_CorrectionConvergesWithoutLooping(t *testing.T) {
 	feedback := map[string]string{"availableCondition": "False", "etcdManagementType": "Managed"}
 	r, store, tr, cluster := liveTypeReconciler(t, constants.EtcdBackendSpanner, feedback, false)

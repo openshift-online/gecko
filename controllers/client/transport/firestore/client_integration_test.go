@@ -1689,3 +1689,64 @@ func TestIntegration_ReleaseObserved_WithoutAnyApplyDesires(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, otherSnaps, 1, "other clusters are untouched")
 }
+
+func TestIntegration_GetStatus_OutdatedObservedStatusIsDecodedWithoutStaling(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	c := newTestClient(t)
+	opts := emulatorOpts(t)
+
+	specsClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "specs", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, specsClient)
+	statusClient, err := firestore.NewClientWithDatabase(ctx, testMCName, "status", opts...)
+	require.NoError(t, err)
+	closeFirestoreClient(t, statusClient)
+	cleanupCollections(t, []*firestore.Client{specsClient, statusClient}, "applydesires", "readdesires", "deletedesires")
+
+	_, err = c.Apply(ctx, testMCName, testGroupKey, [][]byte{hcManifest(t, testClusterID, "my-hc")})
+	require.NoError(t, err)
+	require.NoError(t, c.Observe(ctx, testMCName, testGroupKey, []transport.ResourceRef{spannerEtcdRef}))
+	writeCurrentStatus(ctx, t, specsClient, statusClient, testGroupKey)
+
+	// kube-applier reported on the SpannerEtcd, but before the ReadDesire was last
+	// written, as happens when it is observed again after being released.
+	readSnaps, err := specsClient.Collection("readdesires").Where("spec.groupKey", "==", testGroupKey).Documents(ctx).GetAll()
+	require.NoError(t, err)
+	var observed *kubeapplier.ReadDesire
+	var observedID string
+	for _, snap := range readSnaps {
+		var rd kubeapplier.ReadDesire
+		require.NoError(t, snap.DataTo(&rd))
+		if rd.Spec.TargetItem.Resource == spannerEtcdRef.Resource {
+			observed, observedID = &rd, snap.Ref.ID
+		}
+	}
+	require.NotNil(t, observed)
+	_, err = statusClient.Collection("readdesires").Doc(observedID).Set(ctx, map[string]any{
+		"spec":   observed.Spec,
+		"status": kubeapplier.ReadDesireStatus{ObservedDesireUpdateTime: time.Unix(1, 0)},
+		"status_kubeContent": map[string]any{
+			"status": map[string]any{
+				"conditions": []any{
+					map[string]any{"type": "BackendReady", "status": "False"},
+					map[string]any{
+						"type": "Ready", "status": "False",
+						"reason":  "WaitingForBackend",
+						"message": "BackendReady: Spanner instance not ready",
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	st, err := c.GetStatus(ctx, testMCName, testGroupKey)
+	require.NoError(t, err)
+	assert.False(t, st.Stale, "an outdated status of an observed target must not stale the applied resources")
+	assert.Equal(t, map[string]string{
+		"readyCondition":        "False",
+		"readyConditionReason":  "WaitingForBackend",
+		"readyConditionMessage": "BackendReady: Spanner instance not ready",
+	}, st.ResourceStatuses[spannerEtcdRef.Key()])
+}
