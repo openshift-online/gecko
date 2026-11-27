@@ -129,6 +129,42 @@ func TestExtractResourceStatuses_HostedCluster(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, versionConditions[1].Status)
 }
 
+func TestExtractResourceStatuses_HostedCluster_EtcdManagementType(t *testing.T) {
+	ref := kubeapplier.ResourceReference{
+		Group: "hypershift.openshift.io", Version: "v1beta1",
+		Resource: "hostedclusters", Namespace: "clusters-abc", Name: "my-hc",
+	}
+	key := "hypershift.openshift.io/v1beta1/hostedclusters/clusters-abc/my-hc"
+
+	for _, tc := range []struct {
+		name string
+		spec map[string]any
+		want string
+	}{
+		{"managed", map[string]any{"etcd": map[string]any{"managementType": "Managed"}}, "Managed"},
+		{"unmanaged", map[string]any{"etcd": map[string]any{"managementType": "Unmanaged"}}, "Unmanaged"},
+		{"no etcd configuration", map[string]any{}, ""},
+		{"no spec", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := map[string]any{"status": map[string]any{"conditions": []any{}}}
+			if tc.spec != nil {
+				obj["spec"] = tc.spec
+			}
+			raw, err := json.Marshal(obj)
+			require.NoError(t, err)
+
+			statuses, err := extractResourceStatuses([]kubeapplier.ReadDesire{makeReadDesire(ref, raw)})
+			require.NoError(t, err)
+			if tc.want == "" {
+				assert.NotContains(t, statuses[key], "etcdManagementType")
+				return
+			}
+			assert.Equal(t, tc.want, statuses[key]["etcdManagementType"])
+		})
+	}
+}
+
 func TestExtractResourceStatuses_HostedCluster_PartialVersionSkipped(t *testing.T) {
 	// History is newest-first: the first entry is Partial (upgrade in progress).
 	// Only the Completed entry should be reported as the cluster version.

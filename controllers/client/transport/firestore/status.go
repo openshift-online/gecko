@@ -82,7 +82,8 @@ func aggregateConditions(desires []kubeapplier.ApplyDesire) []metav1.Condition {
 // extractResourceStatuses parses ReadDesire status documents and returns
 // per-resource status fields keyed by resource identity string.
 // For HostedCluster resources it extracts: availableCondition, controlPlaneEndpoint,
-// version, desiredVersion, availableVersions, and versionConditions.
+// version, desiredVersion, availableVersions, versionConditions, and
+// etcdManagementType.
 // For NodePool resources it extracts: readyCondition, allNodesHealthyCondition.
 // For Certificate resources it extracts: readyCondition.
 // For SpannerEtcd resources it extracts: readyCondition, readyConditionReason,
@@ -128,10 +129,17 @@ func extractResourceStatuses(reads []kubeapplier.ReadDesire) (map[string]map[str
 //   - availableVersions: JSON-encoded .status.version.availableUpdates[].version
 //   - versionConditions: JSON-encoded HostedCluster conditions consumed by Gecko
 //     (upgrade readiness and ingress readiness)
+//   - etcdManagementType: .spec.etcd.managementType, which HyperShift does not
+//     allow to change after creation. Omitted when the live object has none.
 func extractHCFields(raw []byte) (map[string]string, error) {
 	fields := map[string]string{}
 
 	var obj struct {
+		Spec struct {
+			Etcd struct {
+				ManagementType string `json:"managementType"`
+			} `json:"etcd"`
+		} `json:"spec"`
 		Status struct {
 			Conditions           []metav1.Condition `json:"conditions"`
 			ControlPlaneEndpoint struct {
@@ -160,6 +168,10 @@ func extractHCFields(raw []byte) (map[string]string, error) {
 			fields["availableCondition"] = string(c.Status)
 			break
 		}
+	}
+
+	if managementType := obj.Spec.Etcd.ManagementType; managementType != "" {
+		fields["etcdManagementType"] = managementType
 	}
 
 	if host := obj.Status.ControlPlaneEndpoint.Host; host != "" {
