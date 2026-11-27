@@ -165,6 +165,42 @@ func TestExtractResourceStatuses_HostedCluster_EtcdManagementType(t *testing.T) 
 	}
 }
 
+func TestExtractResourceStatuses_HostedCluster_SpannerEnabled(t *testing.T) {
+	ref := kubeapplier.ResourceReference{
+		Group: "hypershift.openshift.io", Version: "v1beta1",
+		Resource: "hostedclusters", Namespace: "clusters-abc", Name: "my-hc",
+	}
+	key := "hypershift.openshift.io/v1beta1/hostedclusters/clusters-abc/my-hc"
+
+	for _, tc := range []struct {
+		name        string
+		annotations map[string]any
+		want        string
+	}{
+		{"opted in", map[string]any{"gcp.managed.openshift.io/spanner-enabled": "true"}, "true"},
+		{"explicitly not enabled", map[string]any{"gcp.managed.openshift.io/spanner-enabled": "false"}, ""},
+		{"other annotations only", map[string]any{"hypershift.openshift.io/cleanup-cloud-resources": "true"}, ""},
+		{"no annotations", nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := map[string]any{"status": map[string]any{"conditions": []any{}}}
+			if tc.annotations != nil {
+				obj["metadata"] = map[string]any{"annotations": tc.annotations}
+			}
+			raw, err := json.Marshal(obj)
+			require.NoError(t, err)
+
+			statuses, err := extractResourceStatuses([]kubeapplier.ReadDesire{makeReadDesire(ref, raw)})
+			require.NoError(t, err)
+			if tc.want == "" {
+				assert.NotContains(t, statuses[key], "spannerEnabled")
+				return
+			}
+			assert.Equal(t, tc.want, statuses[key]["spannerEnabled"])
+		})
+	}
+}
+
 func TestExtractResourceStatuses_HostedCluster_PartialVersionSkipped(t *testing.T) {
 	// History is newest-first: the first entry is Partial (upgrade in progress).
 	// Only the Completed entry should be reported as the cluster version.

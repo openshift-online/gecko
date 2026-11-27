@@ -740,8 +740,10 @@ func (r *Reconciler) resourcesDispatched(ctx context.Context, cluster *privatev1
 //
 // Only a readable, recognized type is acted on. Missing, empty or unrecognized
 // feedback says nothing about the HostedCluster and never changes the record.
-// Gecko only creates Unmanaged etcd for the socketcd backend, so Unmanaged is
-// read as Spanner. Returns true if the record was changed.
+// Unmanaged etcd is read as the socketcd backend only when the HostedCluster
+// carries the socketcd opt-in annotation, so an Unmanaged etcd that Gecko did
+// not set up for socketcd is left alone rather than guessed at. Returns true if
+// the record was changed.
 func (r *Reconciler) correctEtcdBackend(ctx context.Context, cluster *privatev1.Cluster, managementCluster, groupKey string, mwStatus *transport.Status, log logger.Logger) (bool, error) {
 	if mwStatus == nil {
 		return false, nil
@@ -753,11 +755,12 @@ func (r *Reconciler) correctEtcdBackend(ctx context.Context, cluster *privatev1.
 	hcKey := transport.ResourceKey(constants.HyperShiftGroup, constants.HyperShiftVersion, "hostedclusters",
 		fmt.Sprintf("clusters-%s", cluster.UID), safeName)
 
+	feedback := mwStatus.ResourceStatuses[hcKey]
 	var want string
-	switch live := mwStatus.ResourceStatuses[hcKey]["etcdManagementType"]; live {
-	case "Managed":
+	switch {
+	case feedback["etcdManagementType"] == "Managed":
 		want = constants.EtcdBackendManaged
-	case "Unmanaged":
+	case feedback["etcdManagementType"] == "Unmanaged" && feedback["spannerEnabled"] == "true":
 		want = constants.EtcdBackendSpanner
 	default:
 		return false, nil
@@ -768,7 +771,7 @@ func (r *Reconciler) correctEtcdBackend(ctx context.Context, cluster *privatev1.
 	}
 
 	log.Warnf(ctx, "%s: cluster %s is recorded with etcd backend %q but its HostedCluster uses %q etcd; correcting the record",
-		adapterName, cluster.Name, recorded, mwStatus.ResourceStatuses[hcKey]["etcdManagementType"])
+		adapterName, cluster.Name, recorded, feedback["etcdManagementType"])
 	// The SpannerEtcd target registered for a mistaken Spanner record is released
 	// first, so a failure here is retried instead of being forgotten.
 	if want == constants.EtcdBackendManaged {

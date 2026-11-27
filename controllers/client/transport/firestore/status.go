@@ -82,8 +82,8 @@ func aggregateConditions(desires []kubeapplier.ApplyDesire) []metav1.Condition {
 // extractResourceStatuses parses ReadDesire status documents and returns
 // per-resource status fields keyed by resource identity string.
 // For HostedCluster resources it extracts: availableCondition, controlPlaneEndpoint,
-// version, desiredVersion, availableVersions, versionConditions, and
-// etcdManagementType.
+// version, desiredVersion, availableVersions, versionConditions,
+// etcdManagementType, and spannerEnabled.
 // For NodePool resources it extracts: readyCondition, allNodesHealthyCondition.
 // For Certificate resources it extracts: readyCondition.
 // For SpannerEtcd resources it extracts: readyCondition, readyConditionReason,
@@ -131,10 +131,15 @@ func extractResourceStatuses(reads []kubeapplier.ReadDesire) (map[string]map[str
 //     (upgrade readiness and ingress readiness)
 //   - etcdManagementType: .spec.etcd.managementType, which HyperShift does not
 //     allow to change after creation. Omitted when the live object has none.
+//   - spannerEnabled: "true" when the HostedCluster carries the socketcd opt-in
+//     annotation, which tells a socketcd-backed Unmanaged etcd from any other.
 func extractHCFields(raw []byte) (map[string]string, error) {
 	fields := map[string]string{}
 
 	var obj struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
 		Spec struct {
 			Etcd struct {
 				ManagementType string `json:"managementType"`
@@ -172,6 +177,10 @@ func extractHCFields(raw []byte) (map[string]string, error) {
 
 	if managementType := obj.Spec.Etcd.ManagementType; managementType != "" {
 		fields["etcdManagementType"] = managementType
+	}
+
+	if obj.Metadata.Annotations[constants.AnnotationSpannerEnabled] == "true" {
+		fields["spannerEnabled"] = "true"
 	}
 
 	if host := obj.Status.ControlPlaneEndpoint.Host; host != "" {

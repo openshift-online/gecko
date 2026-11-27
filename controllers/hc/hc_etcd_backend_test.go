@@ -331,16 +331,21 @@ func TestReconcile_EtcdBackend_RecordIsCorrectedFromTheLiveHostedCluster(t *test
 	for _, tc := range []struct {
 		name         string
 		recorded     string
-		live         string
+		live         map[string]string
 		want         string
 		wantReleased bool
 	}{
-		{"Spanner record of a Managed HostedCluster", constants.EtcdBackendSpanner, "Managed", constants.EtcdBackendManaged, true},
-		{"Managed record of an Unmanaged HostedCluster", constants.EtcdBackendManaged, "Unmanaged", constants.EtcdBackendSpanner, false},
+		{"Spanner record of a Managed HostedCluster", constants.EtcdBackendSpanner,
+			map[string]string{"etcdManagementType": "Managed"}, constants.EtcdBackendManaged, true},
+		{"Managed record of a socketcd-backed HostedCluster", constants.EtcdBackendManaged,
+			map[string]string{"etcdManagementType": "Unmanaged", "spannerEnabled": "true"}, constants.EtcdBackendSpanner, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, store, tr, cluster := liveTypeReconciler(t, tc.recorded,
-				map[string]string{"availableCondition": "False", "etcdManagementType": tc.live}, false)
+			feedback := map[string]string{"availableCondition": "False"}
+			for k, v := range tc.live {
+				feedback[k] = v
+			}
+			r, store, tr, cluster := liveTypeReconciler(t, tc.recorded, feedback, false)
 
 			result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
 			require.NoError(t, err)
@@ -376,13 +381,19 @@ func TestReconcile_EtcdBackend_CorrectionConvergesWithoutLooping(t *testing.T) {
 }
 
 func TestReconcile_EtcdBackend_MatchingLiveTypeChangesNothing(t *testing.T) {
-	for _, tc := range []struct{ recorded, live string }{
-		{constants.EtcdBackendSpanner, "Unmanaged"},
-		{constants.EtcdBackendManaged, "Managed"},
+	for _, tc := range []struct {
+		recorded string
+		live     map[string]string
+	}{
+		{constants.EtcdBackendSpanner, map[string]string{"etcdManagementType": "Unmanaged", "spannerEnabled": "true"}},
+		{constants.EtcdBackendManaged, map[string]string{"etcdManagementType": "Managed"}},
 	} {
 		t.Run(tc.recorded, func(t *testing.T) {
-			r, store, tr, cluster := liveTypeReconciler(t, tc.recorded,
-				map[string]string{"availableCondition": "True", "etcdManagementType": tc.live}, false)
+			feedback := map[string]string{"availableCondition": "True"}
+			for k, v := range tc.live {
+				feedback[k] = v
+			}
+			r, store, tr, cluster := liveTypeReconciler(t, tc.recorded, feedback, false)
 
 			result, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
 			require.NoError(t, err)
@@ -433,4 +444,26 @@ func TestReconcile_EtcdBackend_CorrectionFailuresAreRetried(t *testing.T) {
 		require.ErrorContains(t, err, "release observed resources")
 		require.False(t, store.updateCalled, "the record is kept so the release is retried")
 	})
+}
+
+func TestReconcile_EtcdBackend_UnmanagedEtcdWithoutSocketcdIsNotReadAsSpanner(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		feedback map[string]string
+	}{
+		{"no opt-in annotation", map[string]string{"availableCondition": "True", "etcdManagementType": "Unmanaged"}},
+		{"opt-in explicitly absent", map[string]string{"availableCondition": "True", "etcdManagementType": "Unmanaged", "spannerEnabled": "false"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// A Managed record that a socketcd reading of Unmanaged would flip to
+			// Spanner. Gecko did not set this HostedCluster up for socketcd, so the
+			// record must stay as it is.
+			r, store, tr, cluster := liveTypeReconciler(t, constants.EtcdBackendManaged, tc.feedback, false)
+
+			_, err := r.Reconcile(context.Background(), clusterReq(cluster.Name))
+			require.NoError(t, err)
+			require.False(t, store.updateCalled, "the record must not be flipped to Spanner")
+			require.Empty(t, tr.ObserveCalls)
+		})
+	}
 }
