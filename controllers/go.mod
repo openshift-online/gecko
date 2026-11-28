@@ -7,7 +7,7 @@ require (
 	cloud.google.com/go/secretmanager v1.24.0
 	github.com/go-logr/logr v1.4.4
 	github.com/openshift-online/gecko/platform-api v0.0.0-00010101000000-000000000000
-	github.com/openshift-online/kube-applier-gcp v0.0.0-20261126201645-07a0ec68b867
+	github.com/openshift-online/kube-applier-gcp v0.0.0-20261128003841-db2af6ffbe08
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel/trace v1.47.0
@@ -130,7 +130,7 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	k8s.io/api v0.37.2 // indirect
+	k8s.io/api v0.37.2
 	k8s.io/apiextensions-apiserver v0.37.2 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260821135717-be32def86098 // indirect
