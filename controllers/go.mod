@@ -7,7 +7,7 @@ require (
 	cloud.google.com/go/secretmanager v1.24.0
 	github.com/go-logr/logr v1.4.4
 	github.com/openshift-online/gecko/platform-api v0.0.0-00010101000000-000000000000
-	github.com/openshift-online/kube-applier-gcp v0.0.0-20261126201645-07a0ec68b867
+	github.com/openshift-online/kube-applier-gcp v0.0.0-20261128003841-db2af6ffbe08
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel/trace v1.47.0
